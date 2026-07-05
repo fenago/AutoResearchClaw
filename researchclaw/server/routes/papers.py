@@ -67,3 +67,17 @@ async def get_paper(request: Request, paper_id: str) -> dict[str, Any]:
     if not isinstance(rows, list) or not rows:
         raise HTTPException(404, "Paper not found")
     return rows[0]
+
+
+@router.get("/api/papers/by-run/{run_id}")
+async def get_paper_by_run(request: Request, run_id: str) -> dict[str, Any]:
+    url, anon = _cfg()
+    token = _token(request)
+    rows = await asyncio.to_thread(
+        _get, url, anon,
+        f"/rest/v1/e5o_papers?run_id=eq.{urllib.parse.quote(run_id)}&select=id",
+        token,
+    )
+    if not isinstance(rows, list) or not rows:
+        raise HTTPException(404, "Paper not found")
+    return rows[0]

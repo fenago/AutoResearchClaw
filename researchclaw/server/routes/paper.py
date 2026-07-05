@@ -76,3 +76,90 @@ async def plan_paper(req: PlanRequest, request: Request) -> dict[str, Any]:
     except Exception as exc:
         logger.warning("paper plan failed", exc_info=True)
         return {"ok": False, "error": str(exc)[:300]}
+
+
+_CHAT_PROMPT = """You are the research assistant writing a paper for its owner.
+Answer their message helpfully and concisely (2-5 sentences, plain English).
+
+Paper context:
+{context}
+
+If the owner is giving direction (preferences, constraints, changes), acknowledge
+it clearly and note it will be applied at the next stage of the run. If they ask
+a question, answer from the context; say so plainly if the context doesn't cover it.
+
+Recent conversation:
+{history}
+
+Owner's message: {message}"""
+
+
+class PaperChatRequest(BaseModel):
+    message: str
+    run_id: str | None = None
+
+
+# Per-run steering notes + short chat history (in-memory)
+_chat_state: dict[str, dict[str, list]] = {}
+
+
+def _run_context() -> tuple[str, str]:
+    """Build context from the active run's plan + stage narration."""
+    from researchclaw.server.routes.pipeline import _active_run
+
+    if not _active_run:
+        return "", "No paper is currently being written."
+    run_id = _active_run.get("run_id", "")
+    parts = [f"Topic: {_active_run.get('topic', '')}", f"Status: {_active_run.get('status')}"]
+    watcher = _active_run.get("watcher")
+    if watcher:
+        snap = watcher.snapshot()
+        if snap.get("current"):
+            parts.append(f"Current stage: {snap['current']}")
+        for entry in snap.get("log", []):
+            parts.append(f"[{entry['index']}. {entry['label']}] {entry.get('summary') or ''}")
+    notes = _chat_state.get(run_id, {}).get("steering", [])
+    if notes:
+        parts.append("Owner directions so far: " + " | ".join(notes))
+    return run_id, "\n".join(parts)
+
+
+@router.post("/api/paper/chat")
+async def paper_chat(req: PaperChatRequest, request: Request) -> dict[str, Any]:
+    message = req.message.strip()
+    if not message:
+        return {"ok": False, "error": "Say something first."}
+
+    from researchclaw.server.app import _app_state
+    from researchclaw.server.routes.llm import resolve_request_config
+
+    config = await asyncio.to_thread(resolve_request_config, _app_state["config"], request)
+    run_id, context = _run_context()
+
+    state = _chat_state.setdefault(run_id or "idle", {"history": [], "steering": []})
+    history = "\n".join(state["history"][-6:]) or "(none)"
+
+    def _go() -> str:
+        from researchclaw.llm.client import LLMClient
+
+        client = LLMClient.from_rc_config(config)
+        resp = client.chat(
+            [{"role": "user", "content": _CHAT_PROMPT.format(
+                context=context, history=history, message=message)}],
+            max_tokens=1200,
+            strip_thinking=True,
+        )
+        return (resp.content or "").strip()
+
+    try:
+        reply = await asyncio.to_thread(_go)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)[:300]}
+
+    state["history"].append(f"Owner: {message}")
+    state["history"].append(f"Assistant: {reply}")
+    # Heuristic: treat imperative-looking messages as steering notes
+    if run_id and not message.rstrip().endswith("?"):
+        state["steering"].append(message[:300])
+
+    return {"ok": True, "reply": reply}

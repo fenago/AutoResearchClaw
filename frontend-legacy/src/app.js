@@ -24,6 +24,9 @@
   function navigateTo(viewName) {
     if (!views[viewName]) return;
     currentView = viewName;
+    if (location.hash.slice(1).split('/')[0] !== viewName) {
+      history.replaceState(null, '', '#' + viewName);
+    }
 
     // Update nav
     document.querySelectorAll('.nav-item').forEach(el => {
@@ -102,8 +105,18 @@
       Notification.requestPermission();
     }
 
-    // Load initial view
-    navigateTo('newpaper');
+    // Hash routing (#view or #papers/<id>)
+    function applyHash() {
+      const h = location.hash.slice(1);
+      if (h.startsWith('papers/')) {
+        MyPapers._pendingId = h.split('/')[1];
+        navigateTo('mypapers');
+        return;
+      }
+      navigateTo(views[h] ? h : 'newpaper');
+    }
+    window.addEventListener('hashchange', applyHash);
+    applyHash();
 
     // Update header status
     try {

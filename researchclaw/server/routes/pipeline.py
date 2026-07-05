@@ -118,6 +118,19 @@ async def start_pipeline(req: PipelineStartRequest, request: Request) -> Pipelin
                 ),
             )
 
+    from researchclaw.server.run_watcher import RunWatcher
+    from researchclaw.server.websocket.events import Event, EventType
+
+    event_manager = state.get("event_manager")
+
+    def _broadcast_stage(data: dict) -> None:
+        if event_manager:
+            event_manager.publish(Event(type=EventType.STAGE_COMPLETE, data=data))
+
+    watcher = RunWatcher(run_id, run_dir, config, broadcast=_broadcast_stage)
+    watcher.start()
+    _active_run["watcher"] = watcher
+
     async def _run_in_background() -> None:
         global _active_run
         try:
@@ -147,6 +160,11 @@ async def start_pipeline(req: PipelineStartRequest, request: Request) -> Pipelin
                 _active_run["status"] = "completed" if failed == 0 else "failed"
                 _active_run["stages_done"] = done
                 _active_run["stages_failed"] = failed
+            watcher.stop()
+            try:
+                await watcher.finalize()
+            except Exception:
+                logger.debug("watcher finalize failed", exc_info=True)
             if papers_store.enabled():
                 deliverables = papers_store.collect_deliverables(run_dir)
                 papers_store.upsert_paper(
@@ -159,6 +177,7 @@ async def start_pipeline(req: PipelineStartRequest, request: Request) -> Pipelin
             if _active_run:
                 _active_run["status"] = "failed"
                 _active_run["error"] = str(exc)
+            watcher.stop()
             if papers_store.enabled():
                 papers_store.upsert_paper(run_id, status="failed", error=str(exc)[:500])
 
@@ -186,10 +205,14 @@ async def stop_pipeline() -> dict[str, str]:
 
 @router.get("/pipeline/status")
 async def pipeline_status() -> dict[str, Any]:
-    """Get current pipeline run status."""
+    """Get current pipeline run status (with live stage progress)."""
     if not _active_run:
         return {"status": "idle"}
-    return _active_run
+    out = {k: v for k, v in _active_run.items() if k != "watcher"}
+    watcher = _active_run.get("watcher")
+    if watcher:
+        out["progress"] = watcher.snapshot()
+    return out
 
 
 @router.get("/pipeline/stages")

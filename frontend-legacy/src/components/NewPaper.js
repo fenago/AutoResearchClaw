@@ -125,13 +125,16 @@ const NewPaper = {
       });
       this._plan = null;
       this._setStatus('', true);
-      // Jump to the live pipeline view
-      const nav = document.querySelector('.nav-item[data-view="pipeline"]');
-      if (nav) nav.click();
-      setTimeout(() => alert(`🚀 Your paper is underway!\nRun: ${res.run_id}\n\nWatch the stages on this Pipeline page — the finished paper will be saved in 📚 My Papers.`), 300);
+      Toast.success('🚀 Your paper is underway — here it is, live.');
+      try {
+        const row = await API.get(`/papers/by-run/${res.run_id}`);
+        location.hash = `papers/${row.id}`;
+      } catch (e2) {
+        location.hash = 'mypapers';
+      }
     } catch (e) {
       if (String(e.message).includes('409')) {
-        this._setStatus('A paper is already being made — check the 🔬 Pipeline page. Stop it first to start a new one.', false);
+        this._setStatus('A paper is already being written — open 📚 My Papers to watch it. One paper runs at a time for now.', false);
       } else {
         this._setStatus(`Couldn't start: ${e.message}`, false);
       }
