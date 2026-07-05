@@ -6,6 +6,7 @@
 
   // View registry
   const views = {
+    newpaper: NewPaper,
     dashboard: Dashboard,
     pipeline: PipelineView,
     chat: ChatPanel,
@@ -17,7 +18,7 @@
     users: UserAdmin,
   };
 
-  let currentView = 'dashboard';
+  let currentView = 'newpaper';
 
   function navigateTo(viewName) {
     if (!views[viewName]) return;
@@ -101,7 +102,7 @@
     }
 
     // Load initial view
-    navigateTo('dashboard');
+    navigateTo('newpaper');
 
     // Update header status
     try {
