@@ -87,6 +87,7 @@ class WebSearchClient:
         include_answer: bool = True,
     ) -> None:
         self.api_key = api_key or os.environ.get("TAVILY_API_KEY", "")
+        self.firecrawl_key = os.environ.get("FIRECRAWL_API_KEY", "")
         self.max_results = max_results
         self.search_depth = search_depth
         self.include_answer = include_answer
@@ -103,7 +104,14 @@ class WebSearchClient:
         limit = max_results or self.max_results
         t0 = time.monotonic()
 
-        # Tavily is the primary engine
+        # Firecrawl is preferred when configured (REST, no SDK dependency)
+        if self.firecrawl_key:
+            try:
+                return self._search_firecrawl(query, limit, t0)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Firecrawl search failed, trying next engine: %s", exc)
+
+        # Tavily next
         if self.api_key:
             try:
                 return self._search_tavily(query, limit, include_domains, exclude_domains, t0)
@@ -111,6 +119,57 @@ class WebSearchClient:
                 logger.warning("Tavily search failed, falling back to DuckDuckGo: %s", exc)
 
         return self._search_duckduckgo(query, limit, t0)
+
+    # ------------------------------------------------------------------
+    # Firecrawl backend (REST — https://api.firecrawl.dev/v2/search)
+    # ------------------------------------------------------------------
+
+    def _search_firecrawl(self, query: str, limit: int, t0: float) -> WebSearchResponse:
+        """Search using Firecrawl's search API (stdlib HTTP, no SDK)."""
+        import json as _json
+        import urllib.request
+
+        body = _json.dumps({
+            "query": query,
+            "limit": min(limit, 20),
+            "scrapeOptions": {"formats": ["markdown"]},
+        }).encode()
+        req = urllib.request.Request(
+            "https://api.firecrawl.dev/v2/search",
+            data=body,
+            headers={
+                "Authorization": f"Bearer {self.firecrawl_key}",
+                "Content-Type": "application/json",
+                "User-Agent": "researchclaw",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            payload = _json.loads(resp.read().decode())
+
+        # Firecrawl returns {"success": true, "data": {"web": [...]}} (v2) or
+        # {"data": [...]} (older) — accept both.
+        data = payload.get("data", payload)
+        items = data.get("web", data) if isinstance(data, dict) else data
+        results = []
+        for item in (items or []):
+            md = item.get("markdown") or item.get("content") or ""
+            desc = item.get("description") or item.get("snippet") or ""
+            results.append(SearchResult(
+                title=item.get("title", ""),
+                url=item.get("url", ""),
+                snippet=(desc or md)[:500],
+                content=md or desc,
+                score=0.0,
+                source="firecrawl",
+            ))
+        return WebSearchResponse(
+            query=query,
+            results=results,
+            answer="",
+            elapsed_seconds=time.monotonic() - t0,
+            source="firecrawl",
+        )
 
     def search_multi(
         self,

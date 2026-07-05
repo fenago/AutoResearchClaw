@@ -132,6 +132,11 @@ def search_papers(
     list[Paper]
         Merged results, sorted by citation_count descending.
     """
+    if not s2_api_key:
+        import os
+
+        s2_api_key = os.environ.get("SEMANTIC_SCHOLAR_API_KEY", "")
+
     all_papers: list[Paper] = []
     cache_get: CacheGet
     cache_put: CachePut
