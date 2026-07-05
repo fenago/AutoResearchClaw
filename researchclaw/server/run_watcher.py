@@ -15,6 +15,33 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
+# Present-tense activity lines shown while a stage is running.
+DOING: dict[str, str] = {
+    "TOPIC_INIT": "Reading your idea, sharpening the research goal, and sizing up the available compute",
+    "PROBLEM_DECOMPOSE": "Splitting the big question into concrete, testable sub-questions",
+    "SEARCH_STRATEGY": "Choosing search queries and sources to sweep the literature",
+    "LITERATURE_COLLECT": "Querying arXiv, OpenAlex, and Semantic Scholar and gathering candidate papers",
+    "LITERATURE_SCREEN": "Reading abstracts and scoring each paper's relevance",
+    "KNOWLEDGE_EXTRACT": "Pulling key findings, methods, and numbers out of the shortlisted papers",
+    "SYNTHESIS": "Connecting the findings into a picture of what's known and where the gaps are",
+    "HYPOTHESIS_GEN": "Debating candidate hypotheses from multiple angles and picking the strongest",
+    "EXPERIMENT_DESIGN": "Designing experiments that can actually confirm or refute the hypothesis",
+    "CODE_GENERATION": "Writing the experiment code",
+    "RESOURCE_PLANNING": "Budgeting compute and runtime for the experiment plan",
+    "EXPERIMENT_RUN": "Executing the experiments and logging every result",
+    "ITERATIVE_REFINE": "Adjusting parameters and re-running where results look unstable",
+    "RESULT_ANALYSIS": "Crunching the results and testing them against the hypothesis",
+    "RESEARCH_DECISION": "Deciding whether to proceed, refine, or pivot based on the evidence",
+    "PAPER_OUTLINE": "Structuring the paper section by section",
+    "PAPER_DRAFT": "Writing the full draft with figures and citations",
+    "PEER_REVIEW": "Running a multi-reviewer critique of the draft",
+    "PAPER_REVISION": "Rewriting weak sections based on the reviews",
+    "QUALITY_GATE": "Checking claims against evidence and hunting for inconsistencies",
+    "KNOWLEDGE_ARCHIVE": "Filing what was learned for future runs",
+    "EXPORT_PUBLISH": "Producing the final LaTeX, bibliography, and deliverables",
+    "CITATION_VERIFY": "Cross-checking every citation against the collected literature",
+}
+
 # Ordered stage catalog with end-user labels and phase grouping.
 STAGES: list[dict[str, str]] = [
     {"key": "TOPIC_INIT", "label": "Understanding your idea", "phase": "Scoping"},
@@ -107,6 +134,8 @@ class RunWatcher:
 
     # -- public snapshot used by /api/pipeline/status and the paper page --
     def snapshot(self) -> dict[str, Any]:
+        import time as _time
+
         seen = {e["key"] for e in self.stage_log}
         current = self._current_stage_key()
         stages = []
@@ -116,7 +145,38 @@ class RunWatcher:
                 state = "active"
             entry = next((e for e in self.stage_log if e["key"] == s["key"]), None)
             stages.append({**s, "state": state, "summary": (entry or {}).get("summary")})
-        return {"stages": stages, "current": current, "log": self.stage_log}
+
+        # Live activity inside the current stage: recent files + elapsed time
+        activity: list[dict[str, Any]] = []
+        stage_started: float | None = None
+        dirs = self._stage_dirs()
+        if dirs:
+            cur_dir = dirs[-1][1]
+            try:
+                stage_started = cur_dir.stat().st_ctime
+                now = _time.time()
+                files = [f for f in cur_dir.rglob("*") if f.is_file()]
+                files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+                for f in files[:6]:
+                    activity.append({
+                        "file": f.name,
+                        "ago": max(0, int(now - f.stat().st_mtime)),
+                    })
+            except Exception:
+                pass
+
+        done = len([x for x in stages if x["state"] == "done"])
+        return {
+            "stages": stages,
+            "current": current,
+            "doing": DOING.get(current or "", ""),
+            "log": self.stage_log,
+            "done": done,
+            "total": len(STAGES),
+            "percent": round(done * 100 / len(STAGES)),
+            "stage_started": stage_started,
+            "activity": activity,
+        }
 
     def _stage_dirs(self) -> list[tuple[str, Path]]:
         out = []

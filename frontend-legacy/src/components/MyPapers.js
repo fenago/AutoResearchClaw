@@ -114,12 +114,13 @@ const MyPapers = {
 
   _startPolling() {
     this._stopPolling();
-    this._pollTimer = setInterval(() => this._refreshLive(), 8000);
+    this._pollTimer = setInterval(() => this._refreshLive(), 5000);
     this._refreshLive();
   },
 
   _stopPolling() {
     if (this._pollTimer) { clearInterval(this._pollTimer); this._pollTimer = null; }
+    this._stopTicker();
   },
 
   async _refreshLive() {
@@ -187,18 +188,23 @@ const MyPapers = {
         </div>
 
         <div class="card" style="margin-bottom:16px">
-          <h3 style="font-size:15px;margin-bottom:4px">${running ? 'Writing your paper…' : (p.status === 'queued' ? 'The plan — 23 stages, starting soon' : 'How this paper was made')}</h3>
-          <p style="font-size:12.5px;color:var(--text-muted)" id="stage-headline"></p>
-          <div id="stage-rail" style="margin-top:12px"></div>
+          <div style="display:flex;align-items:baseline;gap:10px">
+            <h3 style="font-size:15px;flex:1">${running ? 'Writing your paper' : (p.status === 'queued' ? 'The plan — 23 stages, starting soon' : 'How this paper was made')}</h3>
+            <span id="progress-count" style="font-size:12px;color:var(--text-muted)"></span>
+          </div>
+          ${running ? `
+          <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+          <div id="active-work" style="margin-top:14px"></div>` : ''}
+          <div id="stage-rail" style="margin-top:14px"></div>
         </div>
 
         <div class="card" style="margin-bottom:16px">
-          <h3 style="font-size:15px;margin-bottom:10px">💬 Talk to your researcher</h3>
+          <h3 style="font-size:15px;margin-bottom:10px">💬 Your research assistant</h3>
           <div class="chat-dock">
             <div class="chat-msgs" id="paper-chat-msgs">
               <div class="chat-msg ai">${running
-                ? "I'm working on your paper right now. Ask me what's happening, or give me direction — “focus on recent studies”, “keep the tone formal” — and I'll apply it as I go."
-                : "Ask me anything about this paper — how it was made, why I made the choices I did."}</div>
+                ? "This is your research — I'm the assistant doing the legwork. Direct me anytime: “focus on recent studies”, “drop that benchmark”, “keep the tone formal”. Or ask what I'm finding."
+                : "Ask me anything about your paper — what I found, why the research went the way it did."}</div>
             </div>
             <div style="display:flex;gap:8px;padding:10px;border-top:1px solid var(--glass-border)">
               <input id="paper-chat-input" class="g-input" placeholder="Ask a question or give direction…" style="flex:1" />
@@ -266,15 +272,40 @@ const MyPapers = {
       }
     }
 
-    if (headline) {
-      if (snap && snap.current) {
-        const cur = stages.find(s => s.key === snap.current);
-        headline.textContent = cur ? `Now: ${cur.label}` : '';
-      } else if (running) {
-        headline.textContent = 'Connecting to the live run…';
-      } else {
-        headline.textContent = '';
+    // Progress bar + live "what I'm doing right now" card
+    const fill = document.getElementById('progress-fill');
+    const count = document.getElementById('progress-count');
+    const work = document.getElementById('active-work');
+    if (snap && fill) {
+      fill.style.width = `${Math.max(2, snap.percent || 0)}%`;
+      if (count) count.textContent = `Stage ${Math.min((snap.done || 0) + 1, snap.total || 23)} of ${snap.total || 23} · ${snap.percent || 0}% complete`;
+      const cur = stages.find(x => x.key === snap.current);
+      if (work && cur) {
+        this._stageStarted = snap.stage_started ? snap.stage_started * 1000 : this._stageStarted;
+        work.innerHTML = `
+          <div style="display:flex;gap:12px;align-items:flex-start;padding:14px;border:1px solid var(--glass-border);border-radius:12px;background:linear-gradient(90deg, rgba(88,166,255,0.07), transparent)">
+            <div class="dot-throb"></div>
+            <div style="flex:1">
+              <div style="font-size:14px;font-weight:600;color:var(--accent)">${cur.label}<span class="ellipsis"></span></div>
+              <div style="font-size:12.5px;color:var(--text-secondary);margin-top:3px">${snap.doing || ''}</div>
+              <div style="font-size:11.5px;color:var(--text-muted);margin-top:6px">
+                <span id="stage-elapsed"></span>
+              </div>
+              ${(snap.activity || []).length ? `
+              <div style="margin-top:8px;display:flex;flex-direction:column;gap:2px">
+                ${snap.activity.slice(0, 4).map(a => `
+                  <div style="font-size:11.5px;color:var(--text-muted);font-family:var(--font-mono)">
+                    ↳ ${a.file} <span style="opacity:.7">· ${a.ago < 60 ? a.ago + 's' : Math.floor(a.ago / 60) + 'm'} ago</span>
+                  </div>`).join('')}
+              </div>` : ''}
+            </div>
+          </div>`;
+        this._startTicker();
+      } else if (work) {
+        work.innerHTML = `<div style="font-size:13px;color:var(--text-muted)">Connecting to the live run…</div>`;
       }
+    } else if (running && work) {
+      work.innerHTML = `<div style="font-size:13px;color:var(--text-muted)">Connecting to the live run…</div>`;
     }
 
     let html = '', phase = '';
@@ -290,6 +321,21 @@ const MyPapers = {
         </div>`;
     });
     rail.innerHTML = html;
+  },
+
+  _startTicker() {
+    if (this._tickTimer) return;
+    this._tickTimer = setInterval(() => {
+      const el = document.getElementById('stage-elapsed');
+      if (!el || !this._stageStarted) return;
+      const secs = Math.max(0, Math.floor((Date.now() - this._stageStarted) / 1000));
+      const m = Math.floor(secs / 60), sec = secs % 60;
+      el.textContent = `working on this stage for ${m ? m + 'm ' : ''}${sec}s`;
+    }, 1000);
+  },
+
+  _stopTicker() {
+    if (this._tickTimer) { clearInterval(this._tickTimer); this._tickTimer = null; }
   },
 
   async _chat(input) {

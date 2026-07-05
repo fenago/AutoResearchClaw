@@ -8,6 +8,7 @@
   const views = {
     newpaper: NewPaper,
     mypapers: MyPapers,
+    progress: ProgressView,
     dashboard: Dashboard,
     pipeline: PipelineView,
     chat: ChatPanel,
