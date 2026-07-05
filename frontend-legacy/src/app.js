@@ -13,6 +13,7 @@
     paper: PaperPreview,
     projects: ProjectList,
     wizard: WizardFlow,
+    llm: LLMSettings,
   };
 
   let currentView = 'dashboard';

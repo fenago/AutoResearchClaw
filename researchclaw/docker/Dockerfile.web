@@ -1,0 +1,24 @@
+# ResearchClaw web dashboard — lightweight serving image (no GPU stack).
+# Build from repo root: docker build -f researchclaw/docker/Dockerfile.web -t researchclaw-web .
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1
+ENV PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+COPY pyproject.toml README.md LICENSE ./
+COPY researchclaw ./researchclaw
+COPY prompts.default.yaml ./
+COPY config.researchclaw.example.yaml ./config.yaml
+
+# The server serves the SPA from <repo-root>/frontend
+COPY frontend-legacy ./frontend
+
+# pyproject wheel targets reference packages not present in this repo (sibyl, arc),
+# so install runtime deps directly and run from source.
+# fastapi/starlette pinned: starlette 1.x rejects WebSocket upgrades on this app (403)
+RUN pip install "pyyaml>=6.0" "rich>=13.0" "arxiv>=2.1" "numpy>=1.24" httpx "fastapi==0.115.12" "starlette<0.47" "uvicorn[standard]==0.34.2"
+
+EXPOSE 8080
+CMD ["python", "-m", "researchclaw", "serve", "--config", "/app/config.yaml", "--host", "0.0.0.0", "--port", "8080"]

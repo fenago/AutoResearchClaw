@@ -7,7 +7,11 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+# WebSocket must be importable at module level: with `from __future__ import
+# annotations`, FastAPI resolves the endpoint's string annotations against
+# module globals — a function-local import makes it misparse the websocket
+# param as a required query field and reject every connection (403/1008).
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -86,9 +90,31 @@ def create_app(
     # --- Routes ---
     from researchclaw.server.routes.pipeline import router as pipeline_router
     from researchclaw.server.routes.projects import router as projects_router
+    from researchclaw.server.routes.llm import (
+        PROVIDERS,
+        apply_settings,
+        load_saved_settings,
+        router as llm_router,
+    )
 
     app.include_router(pipeline_router)
     app.include_router(projects_router)
+    app.include_router(llm_router)
+
+    # Re-apply a previously saved LLM provider/model choice
+    saved_llm = load_saved_settings()
+    if saved_llm and saved_llm.get("provider") in PROVIDERS and saved_llm.get("model"):
+        _app_state["config"] = apply_settings(
+            _app_state["config"],
+            saved_llm["provider"],
+            saved_llm["model"],
+            saved_llm.get("api_key", ""),
+        )
+        logger.info(
+            "Applied saved LLM settings: %s / %s",
+            saved_llm["provider"],
+            saved_llm["model"],
+        )
 
     if not dashboard_only:
         from researchclaw.server.routes.chat import router as chat_router, set_chat_manager
@@ -102,7 +128,6 @@ def create_app(
             app.include_router(voice_router)
 
     # --- WebSocket events endpoint ---
-    from fastapi import WebSocket, WebSocketDisconnect
     import uuid
 
     @app.websocket("/ws/events")
