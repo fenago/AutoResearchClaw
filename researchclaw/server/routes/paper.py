@@ -16,13 +16,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["paper"])
 
 _PLAN_PROMPT = """You help everyday users start an autonomous research pipeline.
-The user describes, in plain English, an idea for a research paper and what they
-want to get done. Turn it into a concrete research plan.
+The user describes, in plain English, an idea for a research paper. Turn it into
+a rigorous research plan. Respect the scientific method: the user's idea is a
+HYPOTHESIS to test, not a conclusion to demonstrate. Never phrase outcomes as
+already established — the experiments decide, and the paper reports whatever
+the evidence shows (including refutation or mixed results).
 
 Respond with ONLY a JSON object with these keys:
-- "title": a working paper title (concise, specific)
+- "title": a working paper title — neutral, framed as a question or
+  investigation, never presuming the result
 - "topic": one sentence stating the research topic for the pipeline to pursue
-- "goal": one or two sentences describing what the finished paper will show
+- "hypothesis": the user's idea restated as a clearly testable hypothesis
+  ("We hypothesize that ...")
+- "goal": one or two sentences stating the open questions the paper will
+  answer — what will be tested and measured, with the outcome explicitly
+  left to the evidence
 - "approach": an array of 3-5 short bullet strings describing how the research
   will proceed (literature review, hypothesis, experiments, analysis, writing)
 
@@ -64,7 +72,7 @@ async def plan_paper(req: PlanRequest, request: Request) -> dict[str, Any]:
             strip_thinking=True,
         )
         plan = _parse_json(resp.content)
-        for key in ("title", "topic", "goal"):
+        for key in ("title", "topic", "goal", "hypothesis"):
             if not isinstance(plan.get(key), str) or not plan[key].strip():
                 raise ValueError(f"Model response missing '{key}'")
         if not isinstance(plan.get("approach"), list):

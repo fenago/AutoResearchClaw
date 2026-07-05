@@ -108,3 +108,23 @@ const Auth = {
     });
   },
 };
+
+// --- account management ---
+Auth.email = function () {
+  return (this.session && this.session.user && this.session.user.email) || '';
+};
+
+Auth.changePassword = async function (newPassword) {
+  const res = await fetch(`${this.cfg.url}/auth/v1/user`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: this.cfg.anon_key,
+      Authorization: `Bearer ${this.session.access_token}`,
+    },
+    body: JSON.stringify({ password: newPassword }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error_description || data.msg || 'Could not change password');
+  return true;
+};

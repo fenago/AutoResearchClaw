@@ -76,13 +76,16 @@ const NewPaper = {
     this._container.innerHTML = `
       <div class="card" style="max-width:680px;margin:0 auto">
         <h2 style="margin-bottom:4px">Here's the plan — look right?</h2>
-        <p style="color:var(--text-muted);font-size:13px;margin-bottom:18px">Nothing starts until you confirm.</p>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:18px">Nothing starts until you confirm. The experiments decide the answer — if the evidence points the other way, that's what the paper will say.</p>
 
         <div style="border:1px solid var(--border);border-radius:var(--radius);padding:18px;background:var(--bg-tertiary)">
           <div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Working title</div>
           <div style="font-size:18px;font-weight:600;color:var(--accent);margin:2px 0 14px">${p.title}</div>
 
-          <div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">What the paper will show</div>
+          <div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">The hypothesis we'll test</div>
+          <div style="font-size:14px;margin:2px 0 14px">${p.hypothesis || ''}</div>
+
+          <div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">What the paper will find out</div>
           <div style="font-size:14px;margin:2px 0 14px">${p.goal}</div>
 
           <div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">How I'll get there</div>

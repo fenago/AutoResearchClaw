@@ -1,3 +1,29 @@
+const E5O_STAGES = [
+  ['TOPIC_INIT', 'Understanding your idea', 'Scoping'],
+  ['PROBLEM_DECOMPOSE', 'Breaking it into research questions', 'Scoping'],
+  ['SEARCH_STRATEGY', 'Planning the literature search', 'Literature'],
+  ['LITERATURE_COLLECT', 'Collecting papers', 'Literature'],
+  ['LITERATURE_SCREEN', 'Screening for relevance', 'Literature'],
+  ['KNOWLEDGE_EXTRACT', 'Extracting key findings', 'Literature'],
+  ['SYNTHESIS', "Synthesizing what's known", 'Hypothesis'],
+  ['HYPOTHESIS_GEN', 'Forming the hypothesis', 'Hypothesis'],
+  ['EXPERIMENT_DESIGN', 'Designing the experiments', 'Experiments'],
+  ['CODE_GENERATION', 'Writing the experiment code', 'Experiments'],
+  ['RESOURCE_PLANNING', 'Planning compute resources', 'Experiments'],
+  ['EXPERIMENT_RUN', 'Running the experiments', 'Experiments'],
+  ['ITERATIVE_REFINE', 'Refining the experiments', 'Experiments'],
+  ['RESULT_ANALYSIS', 'Analyzing the results', 'Analysis'],
+  ['RESEARCH_DECISION', 'Deciding how to proceed', 'Analysis'],
+  ['PAPER_OUTLINE', 'Outlining the paper', 'Writing'],
+  ['PAPER_DRAFT', 'Writing the draft', 'Writing'],
+  ['PEER_REVIEW', 'Running peer review', 'Writing'],
+  ['PAPER_REVISION', 'Revising the paper', 'Writing'],
+  ['QUALITY_GATE', 'Final quality checks', 'Finalizing'],
+  ['KNOWLEDGE_ARCHIVE', 'Archiving what was learned', 'Finalizing'],
+  ['EXPORT_PUBLISH', 'Exporting the deliverables', 'Finalizing'],
+  ['CITATION_VERIFY', 'Verifying every citation', 'Finalizing'],
+];
+
 /**
  * MyPapers — the paper library and per-paper page (live progress, narration,
  * chat, and the finished document). The paper page is the product's anchor.
@@ -16,7 +42,7 @@ const MyPapers = {
       this._pendingId = null;
       return this._open(id);
     }
-    if (this._detail) return this._renderDetail();
+    this._detail = null;  // navigating to the list always leaves the detail view
 
     container.innerHTML = `
       <div class="card" style="max-width:780px;margin:0 auto">
@@ -69,7 +95,7 @@ const MyPapers = {
   async _open(id) {
     try {
       this._detail = await API.get(`/papers/${id}`);
-      if (location.hash !== `#papers/${id}`) location.hash = `papers/${id}`;
+      if (location.hash !== `#papers/${id}`) history.replaceState(null, '', `#papers/${id}`);
       this._renderDetail();
       if (this._detail.status === 'running') this._startPolling();
     } catch (e) {
@@ -137,6 +163,7 @@ const MyPapers = {
             <div style="flex:1">
               <h2 style="font-size:20px;line-height:1.3">${p.title || p.topic || 'Untitled paper'}</h2>
               <p style="font-size:13px;color:var(--text-muted);margin-top:6px">${p.topic || ''}</p>
+              ${p.plan && p.plan.hypothesis ? `<p style="font-size:13px;color:var(--text-secondary);margin-top:8px;font-style:italic">Hypothesis under test: ${p.plan.hypothesis}</p>` : ''}
             </div>
             ${this._statusPill(p.status)}
           </div>
@@ -152,23 +179,11 @@ const MyPapers = {
             </div>` : ''}
         </div>
 
-        ${running ? `
         <div class="card" style="margin-bottom:16px">
-          <h3 style="font-size:15px;margin-bottom:4px">Writing your paper…</h3>
+          <h3 style="font-size:15px;margin-bottom:4px">${running ? 'Writing your paper…' : 'How this paper was made'}</h3>
           <p style="font-size:12.5px;color:var(--text-muted)" id="stage-headline"></p>
           <div id="stage-rail" style="margin-top:12px"></div>
-        </div>` : ''}
-
-        ${(p.stage_log || []).length && !running ? `
-        <details class="card" style="margin-bottom:16px">
-          <summary style="cursor:pointer;font-size:14px;font-weight:600">How this paper was made (${p.stage_log.length} steps)</summary>
-          <div style="margin-top:12px">${p.stage_log.map(e => `
-            <div style="padding:8px 0;border-bottom:1px solid var(--glass-border)">
-              <div style="font-size:13px;font-weight:600">${e.index}. ${e.label}</div>
-              <div style="font-size:12.5px;color:var(--text-secondary)">${e.summary || ''}</div>
-            </div>`).join('')}
-          </div>
-        </details>` : ''}
+        </div>
 
         <div class="card" style="margin-bottom:16px">
           <h3 style="font-size:15px;margin-bottom:10px">💬 Talk to your researcher</h3>
@@ -213,30 +228,47 @@ const MyPapers = {
 
     const body = document.getElementById('paper-body');
     if (body) body.innerHTML = this._renderMarkdown(p.paper_md || p.paper_tex || '');
-    if (running) this._renderStageRail();
+    this._renderStageRail();
   },
 
   _renderStageRail() {
     const rail = document.getElementById('stage-rail');
     const headline = document.getElementById('stage-headline');
-    if (!rail) return;
-    const snap = this._live;
-    const dbLog = this._detail.stage_log || [];
-
-    if (!snap && !dbLog.length) {
-      rail.innerHTML = `<div style="color:var(--text-muted);font-size:13px">Warming up — the first stage starts in a moment…</div>`;
-      return;
-    }
-    const stages = (snap && snap.stages) || [];
-    if (headline && snap && snap.current) {
-      const cur = stages.find(s => s.key === snap.current);
-      if (cur) headline.textContent = `Now: ${cur.label}`;
-    }
-    if (!stages.length) return;
+    if (!rail || !this._detail) return;
+    const p = this._detail;
+    const running = p.status === 'running';
+    const snap = running ? this._live : null;
+    const dbLog = p.stage_log || [];
 
     const summaries = {};
     dbLog.forEach(e => { summaries[e.key] = e.summary; });
-    (snap.log || []).forEach(e => { summaries[e.key] = e.summary; });
+    if (snap) (snap.log || []).forEach(e => { summaries[e.key] = e.summary; });
+
+    // Build the full 23-stage map: live snapshot when running, history otherwise
+    let stages;
+    if (snap && (snap.stages || []).length) {
+      stages = snap.stages;
+    } else {
+      const doneKeys = new Set(dbLog.map(e => e.key));
+      stages = E5O_STAGES.map(([key, label, phase]) => ({
+        key, label, phase,
+        state: p.status === 'completed' ? 'done' : (doneKeys.has(key) ? 'done' : 'pending'),
+      }));
+      if (running && !dbLog.length) {
+        stages[0].state = 'active';
+      }
+    }
+
+    if (headline) {
+      if (snap && snap.current) {
+        const cur = stages.find(s => s.key === snap.current);
+        headline.textContent = cur ? `Now: ${cur.label}` : '';
+      } else if (running) {
+        headline.textContent = 'Connecting to the live run…';
+      } else {
+        headline.textContent = '';
+      }
+    }
 
     let html = '', phase = '';
     stages.forEach((s, i) => {

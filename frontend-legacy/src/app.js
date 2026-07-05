@@ -17,6 +17,7 @@
     wizard: WizardFlow,
     llm: LLMSettings,
     users: UserAdmin,
+    account: Account,
   };
 
   let currentView = 'newpaper';

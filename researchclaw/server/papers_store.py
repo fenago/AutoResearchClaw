@@ -139,3 +139,23 @@ def get_user_llm(email: str) -> dict[str, str] | None:
     except Exception:
         logger.warning("get_user_llm failed for %s", email, exc_info=True)
     return None
+
+
+def mark_interrupted_runs() -> int:
+    """At server startup: flag papers whose pipeline died with the old container."""
+    if not enabled():
+        return 0
+    url, anon, secret = _env()
+    try:
+        count = _request(
+            f"{url}/rest/v1/rpc/e5o_mark_interrupted",
+            {"apikey": anon, "Authorization": f"Bearer {anon}",
+             "Content-Type": "application/json", "User-Agent": "researchclaw"},
+            {"p_secret": secret},
+        )
+        if count:
+            logger.info("Marked %s interrupted paper run(s) as failed", count)
+        return int(count or 0)
+    except Exception:
+        logger.warning("mark_interrupted_runs failed", exc_info=True)
+        return 0

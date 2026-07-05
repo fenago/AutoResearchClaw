@@ -218,6 +218,12 @@ def create_app(
     async def startup() -> None:
         asyncio.create_task(event_manager.heartbeat_loop(interval=15.0))
 
+        # Reconcile paper library: runs from a previous container are dead
+        from researchclaw.server import papers_store
+
+        if papers_store.enabled():
+            asyncio.get_event_loop().run_in_executor(None, papers_store.mark_interrupted_runs)
+
         if config.dashboard.enabled:
             from researchclaw.dashboard.broadcaster import start_dashboard_loop
 
