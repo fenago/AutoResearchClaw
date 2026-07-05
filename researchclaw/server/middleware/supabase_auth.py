@@ -110,7 +110,7 @@ class SupabaseAuthMiddleware:
                 f"{self.supabase_url}/rest/v1/{self.allowlist_table}?select=email&limit=1",
                 token,
             )
-            allowed = bool(rows)
+            allowed = isinstance(rows, list) and len(rows) > 0
             if not allowed:
                 logger.warning("Auth: %s is not in %s", email, self.allowlist_table)
             return allowed

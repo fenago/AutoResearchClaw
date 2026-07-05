@@ -59,7 +59,19 @@ const Auth = {
     if (document.getElementById('login-overlay')) return;
     const div = document.createElement('div');
     div.id = 'login-overlay';
-    div.style.cssText = 'position:fixed;inset:0;z-index:1000;background:var(--bg-primary);display:flex;align-items:center;justify-content:center';
+    div.style.cssText = 'position:fixed;inset:0;z-index:1000;background:var(--bg-primary);overflow-y:auto';
+
+    // A page can supply its own landing design via <template id="landing-template">
+    // (must contain #login-form, #login-email, #login-password, #login-error).
+    const tpl = document.getElementById('landing-template');
+    if (tpl) {
+      div.appendChild(tpl.content.cloneNode(true));
+      document.body.appendChild(div);
+      this._bindLoginForm();
+      return;
+    }
+
+    div.style.cssText += ';display:flex;align-items:center;justify-content:center';
     div.innerHTML = `
       <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:32px;width:340px;box-shadow:var(--shadow)">
         <h1 style="font-size:22px;margin-bottom:4px;color:var(--accent)">Sign in</h1>
@@ -75,17 +87,23 @@ const Auth = {
       </div>
     `;
     document.body.appendChild(div);
-    document.getElementById('login-form').addEventListener('submit', async (e) => {
+    this._bindLoginForm();
+  },
+
+  _bindLoginForm() {
+    const form = document.getElementById('login-form');
+    if (!form) return;
+    form.addEventListener('submit', async (e) => {
       e.preventDefault();
       const err = document.getElementById('login-error');
-      err.textContent = '';
+      if (err) err.textContent = '';
       try {
         await this.login(
           document.getElementById('login-email').value.trim(),
           document.getElementById('login-password').value,
         );
       } catch (ex) {
-        err.textContent = ex.message;
+        if (err) err.textContent = ex.message;
       }
     });
   },
