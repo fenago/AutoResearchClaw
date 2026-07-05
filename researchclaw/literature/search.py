@@ -28,12 +28,18 @@ from researchclaw.literature.arxiv_client import search_arxiv
 from researchclaw.literature.models import Author, Paper
 from researchclaw.literature.openalex_client import search_openalex
 from researchclaw.literature.semantic_scholar import search_semantic_scholar
+from researchclaw.literature.serpapi_scholar import search_serpapi_scholar
 
 logger = logging.getLogger(__name__)
 
 # OpenAlex first (10K/day), then S2 (1K/5min), then arXiv (1/3s) — least
 # pressure on the most restrictive API.
-_DEFAULT_SOURCES = ("openalex", "semantic_scholar", "arxiv")
+import os as _os
+_DEFAULT_SOURCES = (
+    ("openalex", "semantic_scholar", "arxiv", "google_scholar")
+    if _os.environ.get("SERPAPI_API_KEY")
+    else ("openalex", "semantic_scholar", "arxiv")
+)
 
 
 CacheGet = Callable[[str, str, int], list[dict[str, object]] | None]
@@ -187,6 +193,14 @@ def search_papers(
                 cache_put(query, "arxiv", limit, _papers_to_dicts(papers))
                 source_stats["arxiv"] = len(papers)
                 logger.info("arXiv returned %d papers for %r", len(papers), query)
+
+            elif src_lower in ("google_scholar", "serpapi", "scholar"):
+                papers = search_serpapi_scholar(query, limit=limit, year_min=year_min)
+                all_papers.extend(papers)
+                cache_put(query, "google_scholar", limit, _papers_to_dicts(papers))
+                source_stats["google_scholar"] = len(papers)
+                logger.info("Google Scholar (SerpApi) returned %d papers for %r", len(papers), query)
+                time.sleep(0.5)
 
             else:
                 logger.warning("Unknown literature source: %s (skipped)", src)
