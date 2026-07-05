@@ -107,6 +107,11 @@ class LLMSettingsUpdate(BaseModel):
     api_key: str = ""
 
 
+class LLMModelsRequest(BaseModel):
+    provider: str
+    api_key: str = ""
+
+
 def _get_app_state() -> dict[str, Any]:
     from researchclaw.server.app import _app_state
 
@@ -217,6 +222,76 @@ async def set_llm_settings(update: LLMSettingsUpdate) -> dict[str, Any]:
         }
     )
     return {"ok": True, "current": _current(new_config)}
+
+
+def _resolve_key(provider_id: str, api_key: str, config: Any) -> str:
+    """Explicit key > stored key (same provider) > provider env var."""
+    if api_key:
+        return api_key
+    info = PROVIDERS[provider_id]
+    if config.llm.api_key_env == info["api_key_env"] and config.llm.api_key:
+        return config.llm.api_key
+    return os.environ.get(info["api_key_env"], "")
+
+
+def _fetch_provider_models(provider_id: str, api_key: str) -> list[str]:
+    """List every model the provider account can use (live API call)."""
+    import urllib.request
+
+    info = PROVIDERS[provider_id]
+    if provider_id == "anthropic":
+        url = "https://api.anthropic.com/v1/models?limit=1000"
+        headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
+    else:
+        url = info["base_url"].rstrip("/") + "/models"
+        headers = {"Authorization": f"Bearer {api_key}"}
+    headers["User-Agent"] = "researchclaw"
+
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        payload = json.loads(resp.read().decode())
+
+    models: list[str] = []
+    for item in payload.get("data", []):
+        mid = item.get("id") or item.get("name") or ""
+        if mid.startswith("models/"):  # Gemini prefixes ids
+            mid = mid[len("models/"):]
+        if mid:
+            models.append(mid)
+    return sorted(set(models), key=str.lower)
+
+
+@router.post("/api/llm/models")
+async def list_llm_models(req: LLMModelsRequest) -> dict[str, Any]:
+    """Validate the key by fetching the provider's full model list."""
+    import asyncio
+    import urllib.error
+
+    if req.provider not in PROVIDERS:
+        raise HTTPException(400, f"Unknown provider: {req.provider}")
+
+    state = _get_app_state()
+    key = _resolve_key(req.provider, req.api_key.strip(), state["config"])
+    if not key:
+        return {
+            "ok": False,
+            "error": f"No API key — enter one or set {PROVIDERS[req.provider]['api_key_env']} on the server.",
+        }
+
+    try:
+        models = await asyncio.to_thread(_fetch_provider_models, req.provider, key)
+        return {"ok": True, "models": models, "count": len(models)}
+    except urllib.error.HTTPError as exc:
+        detail = ""
+        try:
+            detail = exc.read().decode()[:300]
+        except Exception:
+            pass
+        if exc.code in (401, 403):
+            return {"ok": False, "error": f"Key rejected by provider (HTTP {exc.code}). {detail}"}
+        return {"ok": False, "error": f"Provider returned HTTP {exc.code}. {detail}"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)[:300]}
 
 
 @router.post("/api/llm/test")
