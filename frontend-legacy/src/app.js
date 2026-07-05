@@ -39,6 +39,17 @@
 
   // Init
   document.addEventListener('DOMContentLoaded', async () => {
+    // Theme selector
+    const themeSel = document.getElementById('theme-select');
+    if (themeSel) {
+      themeSel.value = Theme.get();
+      themeSel.addEventListener('change', () => Theme.set(themeSel.value));
+    }
+
+    // Auth gate — stops here (login overlay shown) until signed in
+    const authed = await Auth.init();
+    if (!authed) return;
+
     // Bind navigation
     document.querySelectorAll('.nav-item').forEach(el => {
       el.addEventListener('click', (e) => {

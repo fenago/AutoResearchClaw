@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>ResearchClaw — Autonomous Research Pipeline</title>
   <link rel="stylesheet" href="/static/src/styles/main.css" />
+  <script src="/static/src/services/theme.js"></script>
 </head>
 <body>
   <div class="app">
@@ -15,6 +16,12 @@
       <span id="connection-badge" class="status-badge idle">Connecting...</span>
       <div style="flex:1"></div>
       <span style="font-size:13px;color:var(--text-secondary)">Autonomous Research Pipeline</span>
+      <select id="theme-select" title="Theme" style="padding:4px 6px;font-size:12px;background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border);border-radius:6px">
+        <option value="system">🖥 System</option>
+        <option value="dark">🌙 Dark</option>
+        <option value="light">☀️ Light</option>
+      </select>
+      <button id="logout-btn" style="display:none;padding:4px 10px;font-size:12px;background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border);border-radius:6px;cursor:pointer">Sign out</button>
     </header>
 
     <!-- Sidebar -->
@@ -61,6 +68,7 @@
   </div>
 
   <!-- Scripts (no build step needed) -->
+  <script src="/static/src/services/auth.js"></script>
   <script src="/static/src/services/api.js"></script>
   <script src="/static/src/services/websocket.js"></script>
   <script src="/static/src/components/Dashboard.js"></script>

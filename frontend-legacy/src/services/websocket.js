@@ -14,7 +14,9 @@ class RCWebSocket {
 
   connect() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const url = `${proto}//${location.host}${this.path}`;
+    const token = (typeof Auth !== 'undefined' && Auth.token && Auth.token()) || null;
+    const qs = token ? `?token=${encodeURIComponent(token)}` : '';
+    const url = `${proto}//${location.host}${this.path}${qs}`;
     this.ws = new WebSocket(url);
 
     this.ws.onopen = () => {

@@ -62,6 +62,32 @@ def create_app(
     if config.server.auth_token:
         app.add_middleware(TokenAuthMiddleware, token=config.server.auth_token)
 
+    # --- Supabase multi-user auth (enabled via env) ---
+    import os as _os
+
+    _supabase_url = _os.environ.get("SUPABASE_URL", "")
+    _supabase_anon = _os.environ.get("SUPABASE_ANON_KEY", "")
+    if _supabase_url and _supabase_anon:
+        from researchclaw.server.middleware.supabase_auth import SupabaseAuthMiddleware
+
+        app.add_middleware(
+            SupabaseAuthMiddleware,
+            supabase_url=_supabase_url,
+            anon_key=_supabase_anon,
+            allowlist_table=_os.environ.get("AUTH_ALLOWLIST_TABLE", "e5o_users"),
+        )
+        logger.info("Supabase auth enabled (allowlist: %s)",
+                    _os.environ.get("AUTH_ALLOWLIST_TABLE", "e5o_users"))
+
+    @app.get("/api/auth/config")
+    async def auth_config() -> dict[str, Any]:
+        """Public endpoint the frontend uses to decide whether to show login."""
+        return {
+            "enabled": bool(_supabase_url and _supabase_anon),
+            "url": _supabase_url,
+            "anon_key": _supabase_anon,
+        }
+
     # --- WebSocket manager ---
     event_manager = ConnectionManager()
     _app_state["event_manager"] = event_manager
