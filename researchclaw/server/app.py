@@ -218,11 +218,11 @@ def create_app(
     async def startup() -> None:
         asyncio.create_task(event_manager.heartbeat_loop(interval=15.0))
 
-        # Reconcile paper library: runs from a previous container are dead
-        from researchclaw.server import papers_store
+        # Resume runs interrupted by the previous container; then start any
+        # queued papers. Unrestorable runs are marked failed with a retry path.
+        from researchclaw.server.routes.pipeline import resume_and_drain
 
-        if papers_store.enabled():
-            asyncio.get_event_loop().run_in_executor(None, papers_store.mark_interrupted_runs)
+        asyncio.create_task(resume_and_drain())
 
         if config.dashboard.enabled:
             from researchclaw.dashboard.broadcaster import start_dashboard_loop

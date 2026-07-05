@@ -95,8 +95,15 @@ class RunWatcher:
         self.config = config
         self.broadcast = broadcast
         self.stage_log: list[dict[str, Any]] = []
+        self.run_files: dict[str, dict[str, str]] = {}
         self._summarized: set[str] = set()
         self._task: asyncio.Task | None = None
+
+    def preload(self, stage_log: list | None, run_files: dict | None) -> None:
+        """Reattach after a resume: carry forward prior narration and files."""
+        self.stage_log = list(stage_log or [])
+        self.run_files = dict(run_files or {})
+        self._summarized = {e["key"] for e in self.stage_log}
 
     # -- public snapshot used by /api/pipeline/status and the paper page --
     def snapshot(self) -> dict[str, Any]:
@@ -159,6 +166,25 @@ class RunWatcher:
                 continue
             summary = await asyncio.to_thread(self._summarize, key, path)
             self._summarized.add(key)
+            # Snapshot this stage's files (plus run-root state) so the run can
+            # be resumed if the container is replaced mid-run.
+            try:
+                from researchclaw.server import papers_store
+
+                self.run_files[path.name] = await asyncio.to_thread(
+                    papers_store.capture_dir_files, path
+                )
+                root_files: dict[str, str] = {}
+                for name in ("checkpoint.json", "goal.md", "hardware_profile.json"):
+                    f = self.run_dir / name
+                    if f.is_file():
+                        try:
+                            root_files[name] = f.read_text(errors="replace")
+                        except Exception:
+                            pass
+                self.run_files["_root"] = root_files
+            except Exception:
+                logger.debug("stage file capture failed", exc_info=True)
             entry = {
                 "key": key,
                 "label": STAGES[_STAGE_INDEX[key]]["label"],
@@ -195,7 +221,9 @@ class RunWatcher:
             from researchclaw.server import papers_store
 
             if papers_store.enabled():
-                papers_store.upsert_paper(self.run_id, stage_log=self.stage_log)
+                papers_store.upsert_paper(
+                    self.run_id, stage_log=self.stage_log, run_files=self.run_files
+                )
         except Exception:
             logger.debug("stage log persist failed", exc_info=True)
 

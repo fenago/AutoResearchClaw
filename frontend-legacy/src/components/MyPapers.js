@@ -62,7 +62,7 @@ const MyPapers = {
   },
 
   _statusPill(status) {
-    const label = { running: 'Writing…', completed: 'Ready', failed: 'Failed' }[status] || status;
+    const label = { running: 'Writing…', queued: 'Queued', completed: 'Ready', failed: 'Failed' }[status] || status;
     return `<span class="g-pill ${status}">${label}</span>`;
   },
 
@@ -97,7 +97,7 @@ const MyPapers = {
       this._detail = await API.get(`/papers/${id}`);
       if (location.hash !== `#papers/${id}`) history.replaceState(null, '', `#papers/${id}`);
       this._renderDetail();
-      if (this._detail.status === 'running') this._startPolling();
+      if (['running', 'queued'].includes(this._detail.status)) this._startPolling();
     } catch (e) {
       Toast.error(`Couldn't open that paper: ${e.message}`);
     }
@@ -123,8 +123,13 @@ const MyPapers = {
   },
 
   async _refreshLive() {
-    if (!this._detail || this._detail.status !== 'running') return this._stopPolling();
+    if (!this._detail || !['running', 'queued'].includes(this._detail.status)) return this._stopPolling();
     try {
+      if (this._detail.status === 'queued') {
+        const fresh = await API.get(`/papers/${this._detail.id}`);
+        if (fresh.status !== 'queued') { this._detail = fresh; this._renderDetail(); if (fresh.status !== 'running') this._stopPolling(); }
+        return;
+      }
       const status = await API.pipelineStatus();
       if (status.run_id === this._detail.run_id) {
         this._live = status.progress || null;
@@ -167,6 +172,8 @@ const MyPapers = {
             </div>
             ${this._statusPill(p.status)}
           </div>
+          ${p.status === 'queued' ? `
+            <p style="margin-top:14px;font-size:13px;color:var(--text-secondary)">⏳ In line — another paper is being written right now. Yours starts automatically when it finishes.</p>` : ''}
           ${p.status === 'failed' ? `
             <div style="margin-top:14px;padding:12px;border:1px solid var(--error);border-radius:10px;font-size:13px">
               Something went wrong: ${p.error || 'unknown error'}.
@@ -180,7 +187,7 @@ const MyPapers = {
         </div>
 
         <div class="card" style="margin-bottom:16px">
-          <h3 style="font-size:15px;margin-bottom:4px">${running ? 'Writing your paper…' : 'How this paper was made'}</h3>
+          <h3 style="font-size:15px;margin-bottom:4px">${running ? 'Writing your paper…' : (p.status === 'queued' ? 'The plan — 23 stages, starting soon' : 'How this paper was made')}</h3>
           <p style="font-size:12.5px;color:var(--text-muted)" id="stage-headline"></p>
           <div id="stage-rail" style="margin-top:12px"></div>
         </div>

@@ -60,63 +60,64 @@ def _get_app_state() -> dict[str, Any]:
     return _app_state
 
 
-@router.post("/pipeline/start", response_model=PipelineStartResponse)
-async def start_pipeline(req: PipelineStartRequest, request: Request) -> PipelineStartResponse:
-    """Start a new pipeline run."""
+def _new_run_id(topic: str) -> str:
+    import hashlib
+    from datetime import datetime, timezone
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return f"rc-{ts}-{hashlib.sha256(topic.encode()).hexdigest()[:6]}"
+
+
+def _apply_topic(config: Any, topic: str | None) -> Any:
+    if not topic:
+        return config
+    import dataclasses
+
+    new_research = dataclasses.replace(config.research, topic=topic)
+    return dataclasses.replace(config, research=new_research)
+
+
+async def _launch_run(
+    run_id: str,
+    config: Any,
+    *,
+    owner_email: str = "",
+    title: str | None = None,
+    plan: dict | None = None,
+    from_stage: Any = None,
+    preload_log: list | None = None,
+    preload_files: dict | None = None,
+    persist_start: bool = True,
+) -> None:
+    """Start (or resume) a pipeline run in the background. Caller holds _run_lock."""
     global _active_run, _run_task
 
-    async with _run_lock:
-        if _active_run and _active_run.get("status") == "running":
-            raise HTTPException(status_code=409, detail="A pipeline is already running")
+    state = _get_app_state()
+    run_dir = _validated_run_dir(run_id)
+    run_dir.mkdir(parents=True, exist_ok=True)
 
-        state = _get_app_state()
-        from researchclaw.server.routes.llm import resolve_request_config
+    _active_run = {
+        "run_id": run_id,
+        "status": "running",
+        "output_dir": str(run_dir),
+        "topic": config.research.topic,
+        "owner": owner_email,
+    }
 
-        config = await asyncio.get_event_loop().run_in_executor(
-            None, resolve_request_config, state["config"], request
+    from researchclaw.server import papers_store
+
+    if papers_store.enabled() and persist_start:
+        await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: papers_store.upsert_paper(
+                run_id,
+                owner_email=owner_email or "unknown",
+                title=title or config.research.topic,
+                topic=config.research.topic,
+                plan=plan,
+                status="running",
+            ),
         )
-
-        if req.topic:
-            import dataclasses
-            new_research = dataclasses.replace(config.research, topic=req.topic)
-            config = dataclasses.replace(config, research=new_research)
-
-        import hashlib
-        from datetime import datetime, timezone
-
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        topic_hash = hashlib.sha256(config.research.topic.encode()).hexdigest()[:6]
-        run_id = f"rc-{ts}-{topic_hash}"
-        run_dir = _validated_run_dir(run_id)
-        run_dir.mkdir(parents=True, exist_ok=True)
-
-        _active_run = {
-            "run_id": run_id,
-            "status": "running",
-            "output_dir": str(run_dir),
-            "topic": config.research.topic,
-        }
-
-        # Persist to the paper library (no-op when not configured)
-        from researchclaw.server import papers_store
-
-        if papers_store.enabled():
-            auth_header = request.headers.get("authorization", "")
-            bearer = auth_header.removeprefix("Bearer ").strip() if auth_header.startswith("Bearer ") else ""
-            owner = await asyncio.get_event_loop().run_in_executor(
-                None, papers_store.owner_email, bearer
-            )
-            await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: papers_store.upsert_paper(
-                    run_id,
-                    owner_email=owner or "unknown",
-                    title=req.title or config.research.topic,
-                    topic=config.research.topic,
-                    plan=req.plan,
-                    status="running",
-                ),
-            )
 
     from researchclaw.server.run_watcher import RunWatcher
     from researchclaw.server.websocket.events import Event, EventType
@@ -128,18 +129,25 @@ async def start_pipeline(req: PipelineStartRequest, request: Request) -> Pipelin
             event_manager.publish(Event(type=EventType.STAGE_COMPLETE, data=data))
 
     watcher = RunWatcher(run_id, run_dir, config, broadcast=_broadcast_stage)
+    if preload_log or preload_files:
+        watcher.preload(preload_log, preload_files)
     watcher.start()
     _active_run["watcher"] = watcher
 
     async def _run_in_background() -> None:
         global _active_run
+        final_status = "failed"
         try:
             from researchclaw.adapters import AdapterBundle
-            from researchclaw.pipeline.runner import execute_pipeline
+            from researchclaw.pipeline.runner import Stage, execute_pipeline
 
             kb_root = Path(config.knowledge_base.root) if config.knowledge_base.root else None
             if kb_root:
                 kb_root.mkdir(parents=True, exist_ok=True)
+
+            kwargs: dict[str, Any] = {}
+            if from_stage is not None:
+                kwargs["from_stage"] = from_stage
 
             loop = asyncio.get_event_loop()
             results = await loop.run_in_executor(
@@ -149,15 +157,17 @@ async def start_pipeline(req: PipelineStartRequest, request: Request) -> Pipelin
                     run_id=run_id,
                     config=config,
                     adapters=AdapterBundle(),
-                    auto_approve_gates=req.auto_approve,
+                    auto_approve_gates=True,
                     skip_noncritical=True,
                     kb_root=kb_root,
+                    **kwargs,
                 ),
             )
             done = sum(1 for r in results if r.status.value == "done")
             failed = sum(1 for r in results if r.status.value == "failed")
+            final_status = "completed" if failed == 0 else "failed"
             if _active_run:
-                _active_run["status"] = "completed" if failed == 0 else "failed"
+                _active_run["status"] = final_status
                 _active_run["stages_done"] = done
                 _active_run["stages_failed"] = failed
             watcher.stop()
@@ -167,11 +177,7 @@ async def start_pipeline(req: PipelineStartRequest, request: Request) -> Pipelin
                 logger.debug("watcher finalize failed", exc_info=True)
             if papers_store.enabled():
                 deliverables = papers_store.collect_deliverables(run_dir)
-                papers_store.upsert_paper(
-                    run_id,
-                    status="completed" if failed == 0 else "failed",
-                    **deliverables,
-                )
+                papers_store.upsert_paper(run_id, status=final_status, **deliverables)
         except Exception as exc:
             logger.exception("Pipeline run failed")
             if _active_run:
@@ -181,12 +187,160 @@ async def start_pipeline(req: PipelineStartRequest, request: Request) -> Pipelin
             if papers_store.enabled():
                 papers_store.upsert_paper(run_id, status="failed", error=str(exc)[:500])
 
+        # Completion email (no-op unless RESEND_API_KEY is configured)
+        try:
+            from researchclaw.server import notify
+
+            notify.paper_finished(owner_email, title or config.research.topic, run_id, final_status)
+        except Exception:
+            logger.debug("completion notification failed", exc_info=True)
+
+        # Start the next queued paper, if any
+        try:
+            await _drain_queue()
+        except Exception:
+            logger.warning("queue drain failed", exc_info=True)
+
     _run_task = asyncio.create_task(_run_in_background())
+
+
+def _owner_config(owner_email: str) -> Any:
+    """Build the run config for a user by email (their model + key, env fallback)."""
+    state = _get_app_state()
+    config = state["config"]
+    try:
+        from researchclaw.server import papers_store
+        from researchclaw.server.routes.llm import PROVIDERS, apply_settings
+
+        user_llm = papers_store.get_user_llm(owner_email) if owner_email else None
+        if user_llm and user_llm["provider"] in PROVIDERS and user_llm["model"]:
+            return apply_settings(config, user_llm["provider"], user_llm["model"], user_llm["api_key"])
+    except Exception:
+        logger.warning("could not resolve owner LLM config", exc_info=True)
+    return config
+
+
+async def _drain_queue() -> None:
+    """If idle, start the oldest queued paper."""
+    from researchclaw.server import papers_store
+
+    if not papers_store.enabled():
+        return
+    async with _run_lock:
+        if _active_run and _active_run.get("status") == "running":
+            return
+        work = await asyncio.get_event_loop().run_in_executor(None, papers_store.get_active_work)
+        queued = [w for w in work if w.get("status") == "queued"]
+        if not queued:
+            return
+        nxt = queued[0]
+        owner = nxt.get("owner_email") or ""
+        config = _apply_topic(_owner_config(owner), nxt.get("topic"))
+        logger.info("Starting queued paper %s for %s", nxt["run_id"], owner)
+        await _launch_run(
+            nxt["run_id"], config,
+            owner_email=owner, title=nxt.get("title"), plan=nxt.get("plan"),
+        )
+
+
+async def resume_and_drain() -> None:
+    """At startup: resume runs interrupted by the previous container, then drain."""
+    from researchclaw.server import papers_store
+
+    if not papers_store.enabled():
+        return
+    work = await asyncio.get_event_loop().run_in_executor(None, papers_store.get_active_work)
+    running = [w for w in work if w.get("status") == "running"]
+
+    async with _run_lock:
+        for row in running:
+            run_id = row["run_id"]
+            run_files = row.get("run_files") or {}
+            if _active_run is None and run_files:
+                try:
+                    run_dir = _validated_run_dir(run_id)
+                    run_dir.mkdir(parents=True, exist_ok=True)
+                    restored = papers_store.restore_run_dir(run_dir, run_files)
+                    from researchclaw.pipeline.runner import read_checkpoint
+
+                    next_stage = read_checkpoint(run_dir)
+                    owner = row.get("owner_email") or ""
+                    config = _apply_topic(_owner_config(owner), row.get("topic"))
+                    logger.info(
+                        "Resuming run %s from %s (%d files restored)",
+                        run_id, next_stage, restored,
+                    )
+                    await _launch_run(
+                        run_id, config,
+                        owner_email=owner, title=row.get("title"), plan=row.get("plan"),
+                        from_stage=next_stage,
+                        preload_log=row.get("stage_log"), preload_files=run_files,
+                        persist_start=False,
+                    )
+                    continue
+                except Exception:
+                    logger.exception("Resume failed for %s", run_id)
+            # Could not resume (no snapshot, resume error, or a run already active)
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda rid=run_id: papers_store.upsert_paper(
+                    rid, status="failed",
+                    error='This run was interrupted by a server update and could not be resumed. Click "Try again" to restart it.',
+                ),
+            )
+
+    await _drain_queue()
+
+
+@router.post("/pipeline/start", response_model=PipelineStartResponse)
+async def start_pipeline(req: PipelineStartRequest, request: Request) -> PipelineStartResponse:
+    """Start a new pipeline run — or queue it if one is already running."""
+    state = _get_app_state()
+    from researchclaw.server import papers_store
+    from researchclaw.server.routes.llm import resolve_request_config
+
+    config = await asyncio.get_event_loop().run_in_executor(
+        None, resolve_request_config, state["config"], request
+    )
+    config = _apply_topic(config, req.topic)
+
+    owner = ""
+    if papers_store.enabled():
+        auth_header = request.headers.get("authorization", "")
+        bearer = auth_header.removeprefix("Bearer ").strip() if auth_header.startswith("Bearer ") else ""
+        owner = await asyncio.get_event_loop().run_in_executor(
+            None, papers_store.owner_email, bearer
+        )
+
+    run_id = _new_run_id(config.research.topic)
+
+    async with _run_lock:
+        if _active_run and _active_run.get("status") == "running":
+            # Queue it (needs the paper library; without it, keep the old 409)
+            if not papers_store.enabled():
+                raise HTTPException(status_code=409, detail="A pipeline is already running")
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: papers_store.upsert_paper(
+                    run_id,
+                    owner_email=owner or "unknown",
+                    title=req.title or config.research.topic,
+                    topic=config.research.topic,
+                    plan=req.plan,
+                    status="queued",
+                ),
+            )
+            return PipelineStartResponse(run_id=run_id, status="queued", output_dir="")
+
+        await _launch_run(
+            run_id, config,
+            owner_email=owner, title=req.title, plan=req.plan,
+        )
 
     return PipelineStartResponse(
         run_id=run_id,
         status="running",
-        output_dir=str(run_dir),
+        output_dir=str(_validated_run_dir(run_id)),
     )
 
 

@@ -128,7 +128,8 @@ const NewPaper = {
       });
       this._plan = null;
       this._setStatus('', true);
-      Toast.success('🚀 Your paper is underway — here it is, live.');
+      if (res.status === 'queued') Toast.info('⏳ Added to the queue — it starts automatically when the current paper finishes.');
+      else Toast.success('🚀 Your paper is underway — here it is, live.');
       try {
         const row = await API.get(`/papers/by-run/${res.run_id}`);
         location.hash = `papers/${row.id}`;

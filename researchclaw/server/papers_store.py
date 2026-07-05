@@ -159,3 +159,63 @@ def mark_interrupted_runs() -> int:
     except Exception:
         logger.warning("mark_interrupted_runs failed", exc_info=True)
         return 0
+
+
+def get_active_work() -> list[dict[str, Any]]:
+    """Fetch running (to resume) and queued (to start) papers. Writer-gated."""
+    if not enabled():
+        return []
+    url, anon, secret = _env()
+    try:
+        rows = _request(
+            f"{url}/rest/v1/rpc/e5o_get_active_work",
+            {"apikey": anon, "Authorization": f"Bearer {anon}",
+             "Content-Type": "application/json", "User-Agent": "researchclaw"},
+            {"p_secret": secret},
+        )
+        return rows if isinstance(rows, list) else []
+    except Exception:
+        logger.warning("get_active_work failed", exc_info=True)
+        return []
+
+
+def restore_run_dir(run_dir: Path, run_files: dict[str, dict[str, str]]) -> int:
+    """Recreate a run directory from persisted file snapshots."""
+    count = 0
+    for group, files in (run_files or {}).items():
+        base = run_dir if group == "_root" else run_dir / group
+        base.mkdir(parents=True, exist_ok=True)
+        for rel, content in (files or {}).items():
+            target = base / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                target.write_text(content)
+                count += 1
+            except Exception:
+                logger.warning("could not restore %s", target, exc_info=True)
+    return count
+
+
+_CAPTURE_EXTS = {".md", ".json", ".jsonl", ".txt", ".tex", ".bib", ".yaml", ".yml", ".csv", ".py"}
+_CAPTURE_FILE_CAP = 400_000
+_CAPTURE_GROUP_CAP = 2_000_000
+
+
+def capture_dir_files(base: Path) -> dict[str, str]:
+    """Snapshot a directory's text files (capped) for resume storage."""
+    out: dict[str, str] = {}
+    total = 0
+    if not base.is_dir():
+        return out
+    for path in sorted(base.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in _CAPTURE_EXTS:
+            continue
+        try:
+            size = path.stat().st_size
+            if size > _CAPTURE_FILE_CAP or total + size > _CAPTURE_GROUP_CAP:
+                continue
+            out[str(path.relative_to(base))] = path.read_text(errors="replace")
+            total += size
+        except Exception:
+            continue
+    return out
