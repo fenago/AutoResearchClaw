@@ -21,6 +21,48 @@ logger = logging.getLogger(__name__)
 _ENDPOINT = "https://serpapi.com/search.json"
 
 
+def _monthly_limit() -> int:
+    try:
+        return int(os.environ.get("SERPAPI_MONTHLY_LIMIT", "250"))
+    except ValueError:
+        return 250
+
+
+def _consume_quota() -> bool:
+    """Consume one SerpApi unit against the persistent monthly counter.
+
+    Returns True if allowed to proceed. Fail-safe: if the counter backend is
+    unavailable, allow the call (SerpApi itself hard-enforces the real quota).
+    """
+    supa_url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+    anon = os.environ.get("SUPABASE_ANON_KEY", "")
+    writer = os.environ.get("E5O_WRITER_SECRET", "")
+    if not (supa_url and anon and writer):
+        return True  # no tracking backend configured
+    try:
+        body = json.dumps({
+            "p_secret": writer, "p_provider": "serpapi", "p_limit": _monthly_limit(),
+        }).encode()
+        req = urllib.request.Request(
+            f"{supa_url}/rest/v1/rpc/e5o_consume_api",
+            data=body,
+            headers={"apikey": anon, "Authorization": f"Bearer {anon}",
+                     "Content-Type": "application/json", "User-Agent": "researchclaw"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            remaining = json.loads(resp.read().decode())
+        if isinstance(remaining, int) and remaining < 0:
+            logger.warning("SerpApi monthly quota exhausted — skipping Google Scholar")
+            return False
+        if isinstance(remaining, int) and remaining <= 20:
+            logger.warning("SerpApi quota low: %d searches left this month", remaining)
+        return True
+    except Exception:
+        logger.debug("SerpApi quota check failed; allowing (SerpApi enforces limit)", exc_info=True)
+        return True
+
+
 def _year_from_summary(summary: str) -> int:
     # publication_info.summary looks like "J Smith, A Doe - Journal, 2023 - publisher"
     m = re.search(r"\b(19|20)\d{2}\b", summary or "")
@@ -40,6 +82,10 @@ def search_serpapi_scholar(
     """Search Google Scholar via SerpApi and return Paper objects."""
     key = api_key or os.environ.get("SERPAPI_API_KEY", "")
     if not key:
+        return []
+
+    # Respect the monthly quota — skip (other sources compensate) when exhausted.
+    if not _consume_quota():
         return []
 
     params = {

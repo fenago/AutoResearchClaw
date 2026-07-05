@@ -92,7 +92,19 @@ async def list_users(request: Request) -> dict[str, Any]:
             r.get("email", "").lower() == my_email.lower() and r.get("is_admin")
             for r in rows
         )
-        return {"me": my_email, "is_admin": is_admin, "users": rows if is_admin else []}
+        usage = {}
+        if is_admin:
+            import os as _os
+
+            writer = _os.environ.get("E5O_WRITER_SECRET", "")
+            limit = int(_os.environ.get("SERPAPI_MONTHLY_LIMIT", "250"))
+            if writer:
+                st_u, used = _sb(url, anon, "/rest/v1/rpc/e5o_api_usage_now", token,
+                                 method="POST", body={"p_secret": writer, "p_provider": "serpapi"})
+                if isinstance(used, int):
+                    usage = {"serpapi": {"used": used, "limit": limit, "remaining": max(0, limit - used)}}
+        return {"me": my_email, "is_admin": is_admin,
+                "users": rows if is_admin else [], "usage": usage}
 
     return await asyncio.to_thread(_go)
 

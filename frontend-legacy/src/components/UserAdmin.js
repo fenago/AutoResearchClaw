@@ -34,7 +34,14 @@ const UserAdmin = {
     }
 
     const inputStyle = 'padding:8px;background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius)';
+    const su = (this._data.usage || {}).serpapi;
     el.innerHTML = `
+      ${su ? `<div class="card" style="margin-bottom:14px;padding:14px">
+        <div style="display:flex;align-items:baseline;gap:8px"><strong style="font-size:13px">Google Scholar (SerpApi) this month</strong>
+          <span style="font-size:12px;color:${su.remaining <= 25 ? 'var(--error)' : 'var(--text-muted)'}">${su.used} / ${su.limit} used · ${su.remaining} left</span></div>
+        <div class="progress-track" style="margin-top:8px"><div class="progress-fill" style="width:${Math.round(su.used / su.limit * 100)}%;animation:none"></div></div>
+        ${su.remaining <= 25 ? '<div style="font-size:11.5px;color:var(--error);margin-top:6px">Low — Google Scholar will pause automatically when exhausted; the other 3 sources keep working.</div>' : ''}
+      </div>` : ''}
       <div style="display:flex;flex-direction:column;gap:16px">
         <div>
           ${this._data.users.map(u => `
