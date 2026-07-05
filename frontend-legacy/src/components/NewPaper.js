@@ -10,6 +10,30 @@ const NewPaper = {
     this._container = container;
     if (this._plan) this._renderConfirm();
     else this._renderIdea();
+    this._loadUsage();
+  },
+
+  async _loadUsage() {
+    try {
+      this._usage = await API.get('/me/usage');
+      this._renderUsageBadge();
+    } catch (e) { /* non-fatal */ }
+  },
+
+  _usageText() {
+    const u = this._usage;
+    if (!u || !u.enabled) return '';
+    if (u.is_admin) return `${u.used} papers this month · unlimited`;
+    return `${u.used} of ${u.limit} papers used this month · ${u.remaining} left`;
+  },
+
+  _renderUsageBadge() {
+    const el = document.getElementById('np-usage');
+    if (!el) return;
+    const u = this._usage;
+    if (!u || !u.enabled) { el.textContent = ''; return; }
+    const low = !u.is_admin && u.remaining <= 3;
+    el.innerHTML = `<span class="g-pill" style="color:${low ? 'var(--error)' : 'var(--text-muted)'}">${this._usageText()}</span>`;
   },
 
   _inputStyle: 'padding:12px;background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius);font-size:15px;font-family:var(--font-sans)',
@@ -17,7 +41,10 @@ const NewPaper = {
   _renderIdea() {
     this._container.innerHTML = `
       <div class="card" style="max-width:680px;margin:0 auto">
-        <h2 style="margin-bottom:4px">✍️ New Paper</h2>
+        <div style="display:flex;align-items:flex-start;gap:12px">
+          <h2 style="margin-bottom:4px;flex:1">✍️ New Paper</h2>
+          <span id="np-usage"></span>
+        </div>
         <p style="color:var(--text-secondary);font-size:14px;margin-bottom:18px">
           Tell me your idea and what you want the paper to accomplish — in plain English.
           I'll draft a plan for you to confirm, then do the rest: literature review,
@@ -118,9 +145,10 @@ const NewPaper = {
             style="padding:11px 16px;border:1px solid var(--border);border-radius:8px;background:var(--bg-tertiary);color:var(--text-primary);cursor:pointer">🔁 Redraft</button>
         </div>
         <p id="np-status" style="font-size:13px;margin-top:12px;color:var(--text-muted)"></p>
-        <p style="font-size:12px;color:var(--text-muted);margin-top:8px">
-          Heads up: a full run takes a while (hours, not minutes) and makes many AI-model calls.
-          You can watch every stage live and step away any time.</p>
+        <div style="font-size:12px;color:var(--text-muted);margin-top:10px;padding:10px 12px;border:1px solid var(--glass-border);border-radius:10px;background:var(--glass-highlight)">
+          <div>⏱️ A full run takes hours and makes hundreds of AI-model calls on your configured model — you can watch every stage live and step away any time.</div>
+          <div id="np-confirm-usage" style="margin-top:6px"></div>
+        </div>
       </div>
     `;
     document.getElementById('np-start-btn').addEventListener('click', () => {
@@ -129,6 +157,12 @@ const NewPaper = {
     });
     document.getElementById('np-edit-btn').addEventListener('click', () => { this._plan = null; this._renderIdea(); });
     document.getElementById('np-again-btn').addEventListener('click', () => { this._plan = null; this._renderIdea(); this._makePlanFromSaved(); });
+    const cu = document.getElementById('np-confirm-usage');
+    if (cu && this._usage && this._usage.enabled) {
+      cu.textContent = this._usage.is_admin
+        ? `This uses 1 paper — you have unlimited runs (admin).`
+        : `This uses 1 of your ${this._usage.limit} monthly papers (${this._usage.remaining} left).`;
+    }
   },
 
   async _makePlanFromSaved() {
@@ -154,7 +188,9 @@ const NewPaper = {
         location.hash = 'mypapers';
       }
     } catch (e) {
-      if (String(e.message).includes('409')) {
+      if (String(e.message).includes('429')) {
+        this._setStatus('You have reached your monthly paper limit. It resets on the 1st of the month — ask an admin if you need more.', false);
+      } else if (String(e.message).includes('409')) {
         this._setStatus('A paper is already being written — open 📚 My Papers to watch it. One paper runs at a time for now.', false);
       } else {
         this._setStatus(`Couldn't start: ${e.message}`, false);

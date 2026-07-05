@@ -219,3 +219,46 @@ def capture_dir_files(base: Path) -> dict[str, str]:
         except Exception:
             continue
     return out
+
+
+def _monthly_run_limit() -> int:
+    try:
+        return int(os.environ.get("E5O_MONTHLY_RUN_LIMIT", "20"))
+    except ValueError:
+        return 20
+
+
+def consume_run(email: str) -> int:
+    """Consume one monthly run for a user. Returns remaining (>=0), -1 if over
+    limit, or a large number for admins. Fail-open (allow) if backend is down."""
+    if not enabled() or not email:
+        return _monthly_run_limit()
+    url, anon, secret = _env()
+    try:
+        remaining = _request(
+            f"{url}/rest/v1/rpc/e5o_consume_run",
+            {"apikey": anon, "Authorization": f"Bearer {anon}",
+             "Content-Type": "application/json", "User-Agent": "researchclaw"},
+            {"p_secret": secret, "p_email": email, "p_limit": _monthly_run_limit()},
+        )
+        return int(remaining) if isinstance(remaining, int) else _monthly_run_limit()
+    except Exception:
+        logger.warning("consume_run failed (allowing)", exc_info=True)
+        return _monthly_run_limit()
+
+
+def run_count(email: str) -> int:
+    """Current-month run count for a user (writer-gated)."""
+    if not enabled() or not email:
+        return 0
+    url, anon, secret = _env()
+    try:
+        c = _request(
+            f"{url}/rest/v1/rpc/e5o_run_count",
+            {"apikey": anon, "Authorization": f"Bearer {anon}",
+             "Content-Type": "application/json", "User-Agent": "researchclaw"},
+            {"p_secret": secret, "p_email": email},
+        )
+        return int(c) if isinstance(c, int) else 0
+    except Exception:
+        return 0

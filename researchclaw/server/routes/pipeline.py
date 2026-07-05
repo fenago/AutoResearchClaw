@@ -355,6 +355,17 @@ async def start_pipeline(req: PipelineStartRequest, request: Request) -> Pipelin
         owner = await asyncio.get_event_loop().run_in_executor(
             None, papers_store.owner_email, bearer
         )
+        # Per-user monthly run limit (admins exempt). Consume one unit up front.
+        if owner:
+            remaining = await asyncio.get_event_loop().run_in_executor(
+                None, papers_store.consume_run, owner
+            )
+            if remaining == -1:
+                raise HTTPException(
+                    status_code=429,
+                    detail=(f"You've reached your monthly limit of "
+                            f"{papers_store._monthly_run_limit()} papers. It resets on the 1st."),
+                )
 
     run_id = _new_run_id(config.research.topic)
     copilot = req.mode == "copilot"
@@ -478,6 +489,53 @@ def _fetch_paper_row(request: Request, run_id: str) -> dict:
     if not rows:
         raise HTTPException(404, "Paper not found")
     return rows[0]
+
+
+@router.get("/me/usage")
+async def my_usage(request: Request) -> dict[str, Any]:
+    """The caller's monthly paper-run usage (read via their own token/RLS)."""
+    import os
+    import urllib.parse
+    import urllib.request
+    from datetime import datetime, timezone
+
+    url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+    anon = os.environ.get("SUPABASE_ANON_KEY", "")
+    limit = int(os.environ.get("E5O_MONTHLY_RUN_LIMIT", "20"))
+    token = _user_bearer(request)
+    if not (url and anon and token):
+        return {"enabled": False, "used": 0, "limit": limit, "remaining": limit, "is_admin": False}
+
+    month = datetime.now(timezone.utc).strftime("%Y-%m")
+
+    def _get(path: str) -> Any:
+        req2 = urllib.request.Request(
+            url + path,
+            headers={"apikey": anon, "Authorization": f"Bearer {token}",
+                     "User-Agent": "researchclaw"})
+        with urllib.request.urlopen(req2, timeout=15) as resp:
+            return json.loads(resp.read().decode())
+
+    def _go() -> dict[str, Any]:
+        used = 0
+        is_admin = False
+        try:
+            urows = _get("/rest/v1/e5o_users?select=is_admin&limit=1")
+            if isinstance(urows, list) and urows:
+                is_admin = bool(urows[0].get("is_admin"))
+            rrows = _get(
+                f"/rest/v1/e5o_run_usage?select=count&month=eq.{urllib.parse.quote(month)}")
+            if isinstance(rrows, list) and rrows:
+                used = int(rrows[0].get("count", 0))
+        except Exception:
+            logger.debug("usage read failed", exc_info=True)
+        return {
+            "enabled": True, "used": used, "limit": limit,
+            "remaining": (999999 if is_admin else max(0, limit - used)),
+            "is_admin": is_admin,
+        }
+
+    return await asyncio.get_event_loop().run_in_executor(None, _go)
 
 
 @router.post("/pipeline/gate")
