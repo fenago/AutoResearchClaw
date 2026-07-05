@@ -181,11 +181,20 @@ def create_app(
     if frontend_dir.is_dir():
         app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
 
-        # Serve index.html at root
-        from fastapi.responses import FileResponse
+        # Serve the dashboard at / and /app. With ROOT_REDIRECT set (e.g.
+        # "/site/" to lead with the public website), / redirects instead.
+        from fastapi.responses import FileResponse, RedirectResponse
+
+        root_redirect = _os.environ.get("ROOT_REDIRECT", "")
 
         @app.get("/")
-        async def index() -> FileResponse:
+        async def index() -> Any:
+            if root_redirect:
+                return RedirectResponse(root_redirect)
+            return FileResponse(str(frontend_dir / "index.html"))
+
+        @app.get("/app")
+        async def app_index() -> FileResponse:
             return FileResponse(str(frontend_dir / "index.html"))
 
     # --- Background tasks ---

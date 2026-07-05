@@ -27,7 +27,7 @@ class SupabaseAuthMiddleware:
     """Reject unauthenticated/unauthorized requests before they reach the app."""
 
     EXEMPT_PATHS = frozenset(
-        {"/", "/api/health", "/api/auth/config", "/docs", "/openapi.json", "/favicon.ico"}
+        {"/", "/app", "/api/health", "/api/auth/config", "/docs", "/openapi.json", "/favicon.ico"}
     )
     EXEMPT_PREFIXES = ("/static", "/site")
 
