@@ -29,7 +29,7 @@ class SupabaseAuthMiddleware:
     EXEMPT_PATHS = frozenset(
         {"/", "/api/health", "/api/auth/config", "/docs", "/openapi.json", "/favicon.ico"}
     )
-    EXEMPT_PREFIXES = ("/static",)
+    EXEMPT_PREFIXES = ("/static", "/site")
 
     def __init__(
         self,

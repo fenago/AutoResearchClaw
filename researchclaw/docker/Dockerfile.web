@@ -15,6 +15,9 @@ COPY config.researchclaw.example.yaml ./config.yaml
 # The server serves the SPA from <repo-root>/frontend
 COPY frontend-legacy ./frontend
 
+# Static marketing/docs website, served at /site
+COPY website ./website
+
 # pyproject wheel targets reference packages not present in this repo (sibyl, arc),
 # so install runtime deps directly and run from source.
 # fastapi/starlette pinned: starlette 1.x rejects WebSocket upgrades on this app (403)

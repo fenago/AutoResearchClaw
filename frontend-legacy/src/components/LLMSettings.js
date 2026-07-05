@@ -48,6 +48,7 @@ const LLMSettings = {
           API key <span id="llm-key-hint" style="color:var(--text-muted)"></span>
           <div style="display:flex;gap:8px">
             <input id="llm-api-key" type="password" placeholder="paste key (blank = use key already on server)"
+              autocomplete="new-password" data-lpignore="true" data-1p-ignore name="no-fill-${Date.now()}"
               style="${this._inputStyle};flex:1" />
             <button id="llm-load-models" class="btn primary" style="padding:8px 14px;white-space:nowrap">Test key &amp; load models</button>
           </div>
@@ -171,6 +172,19 @@ const LLMSettings = {
   async _save() {
     const model = this._selectedModel || (document.getElementById('llm-model-search').value || '').trim();
     if (!model) { this._status('Pick a model from the list (or type an exact id in the search box).', false); return; }
+    const typedKey = document.getElementById('llm-api-key').value.trim();
+    if (typedKey) {
+      // Never persist an unverified key (guards against browser autofill garbage)
+      this._status('Validating key before saving…', true);
+      const check = await API.post('/llm/models', {
+        provider: document.getElementById('llm-provider').value,
+        api_key: typedKey,
+      });
+      if (!check.ok) {
+        this._status(`✗ Not saved — the key in the field failed validation (${check.error}). Clear the field to keep the server's key.`, false);
+        return;
+      }
+    }
     try {
       const res = await API.post('/llm/settings', {
         provider: document.getElementById('llm-provider').value,

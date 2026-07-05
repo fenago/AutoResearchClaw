@@ -123,9 +123,12 @@ def create_app(
         router as llm_router,
     )
 
+    from researchclaw.server.routes.admin import router as admin_router
+
     app.include_router(pipeline_router)
     app.include_router(projects_router)
     app.include_router(llm_router)
+    app.include_router(admin_router)
 
     # Re-apply a previously saved LLM provider/model choice
     saved_llm = load_saved_settings()
@@ -167,6 +170,11 @@ def create_app(
                 await websocket.receive_text()
         except WebSocketDisconnect:
             event_manager.disconnect(client_id)
+
+    # --- Static marketing/docs website (public) ---
+    website_dir = Path(__file__).resolve().parent.parent.parent / "website"
+    if website_dir.is_dir():
+        app.mount("/site", StaticFiles(directory=str(website_dir), html=True), name="site")
 
     # --- Static files (frontend) ---
     frontend_dir = Path(__file__).resolve().parent.parent.parent / "frontend"

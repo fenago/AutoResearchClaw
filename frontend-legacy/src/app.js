@@ -14,6 +14,7 @@
     projects: ProjectList,
     wizard: WizardFlow,
     llm: LLMSettings,
+    users: UserAdmin,
   };
 
   let currentView = 'dashboard';
@@ -51,7 +52,7 @@
     if (!authed) return;
 
     // Bind navigation
-    document.querySelectorAll('.nav-item').forEach(el => {
+    document.querySelectorAll('.nav-item[data-view]').forEach(el => {
       el.addEventListener('click', (e) => {
         e.preventDefault();
         navigateTo(el.dataset.view);
