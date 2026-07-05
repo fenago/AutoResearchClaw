@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,8 @@ class PipelineStartRequest(BaseModel):
     topic: str | None = None
     config_overrides: dict[str, Any] | None = None
     auto_approve: bool = True
+    title: str | None = None
+    plan: dict[str, Any] | None = None
 
 
 class PipelineStartResponse(BaseModel):
@@ -59,7 +61,7 @@ def _get_app_state() -> dict[str, Any]:
 
 
 @router.post("/pipeline/start", response_model=PipelineStartResponse)
-async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
+async def start_pipeline(req: PipelineStartRequest, request: Request) -> PipelineStartResponse:
     """Start a new pipeline run."""
     global _active_run, _run_task
 
@@ -68,7 +70,11 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
             raise HTTPException(status_code=409, detail="A pipeline is already running")
 
         state = _get_app_state()
-        config = state["config"]
+        from researchclaw.server.routes.llm import resolve_request_config
+
+        config = await asyncio.get_event_loop().run_in_executor(
+            None, resolve_request_config, state["config"], request
+        )
 
         if req.topic:
             import dataclasses
@@ -90,6 +96,27 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
             "output_dir": str(run_dir),
             "topic": config.research.topic,
         }
+
+        # Persist to the paper library (no-op when not configured)
+        from researchclaw.server import papers_store
+
+        if papers_store.enabled():
+            auth_header = request.headers.get("authorization", "")
+            bearer = auth_header.removeprefix("Bearer ").strip() if auth_header.startswith("Bearer ") else ""
+            owner = await asyncio.get_event_loop().run_in_executor(
+                None, papers_store.owner_email, bearer
+            )
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: papers_store.upsert_paper(
+                    run_id,
+                    owner_email=owner or "unknown",
+                    title=req.title or config.research.topic,
+                    topic=config.research.topic,
+                    plan=req.plan,
+                    status="running",
+                ),
+            )
 
     async def _run_in_background() -> None:
         global _active_run
@@ -120,11 +147,20 @@ async def start_pipeline(req: PipelineStartRequest) -> PipelineStartResponse:
                 _active_run["status"] = "completed" if failed == 0 else "failed"
                 _active_run["stages_done"] = done
                 _active_run["stages_failed"] = failed
+            if papers_store.enabled():
+                deliverables = papers_store.collect_deliverables(run_dir)
+                papers_store.upsert_paper(
+                    run_id,
+                    status="completed" if failed == 0 else "failed",
+                    **deliverables,
+                )
         except Exception as exc:
             logger.exception("Pipeline run failed")
             if _active_run:
                 _active_run["status"] = "failed"
                 _active_run["error"] = str(exc)
+            if papers_store.enabled():
+                papers_store.upsert_paper(run_id, status="failed", error=str(exc)[:500])
 
     _run_task = asyncio.create_task(_run_in_background())
 

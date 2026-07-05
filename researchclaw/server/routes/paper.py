@@ -8,7 +8,7 @@ import logging
 import re
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -43,14 +43,15 @@ def _parse_json(text: str) -> dict[str, Any]:
 
 
 @router.post("/api/paper/plan")
-async def plan_paper(req: PlanRequest) -> dict[str, Any]:
+async def plan_paper(req: PlanRequest, request: Request) -> dict[str, Any]:
     idea = req.idea.strip()
     if not idea:
         return {"ok": False, "error": "Describe your idea first."}
 
     from researchclaw.server.app import _app_state
+    from researchclaw.server.routes.llm import resolve_request_config
 
-    config = _app_state["config"]
+    config = await asyncio.to_thread(resolve_request_config, _app_state["config"], request)
 
     def _go() -> dict[str, Any]:
         from researchclaw.llm.client import LLMClient

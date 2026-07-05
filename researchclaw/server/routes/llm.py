@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -182,10 +182,90 @@ def _current(config: Any) -> dict[str, Any]:
     }
 
 
+def _caller_bearer(request: Request) -> str:
+    auth = request.headers.get("authorization", "")
+    return auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
+
+
+def _auth_enabled() -> bool:
+    return bool(os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_ANON_KEY"))
+
+
+def _caller_email(request: Request) -> str:
+    from researchclaw.server import papers_store
+
+    return papers_store.owner_email(_caller_bearer(request))
+
+
+def resolve_request_config(config: Any, request: Request) -> Any:
+    """Per-user LLM: apply the requesting user's stored provider/model/key."""
+    if not _auth_enabled():
+        return config
+    from researchclaw.server import papers_store
+
+    email = _caller_email(request)
+    user_llm = papers_store.get_user_llm(email) if email else None
+    if user_llm and user_llm["provider"] in PROVIDERS and user_llm["model"]:
+        return apply_settings(
+            config, user_llm["provider"], user_llm["model"], user_llm["api_key"]
+        )
+    return config
+
+
 @router.get("/api/llm/settings")
-async def get_llm_settings() -> dict[str, Any]:
+async def get_llm_settings(request: Request) -> dict[str, Any]:
     state = _get_app_state()
     config = state["config"]
+
+    if _auth_enabled():
+        import asyncio as _aio
+
+        def _user_row() -> dict | None:
+            import urllib.parse as _up
+            import urllib.request as _ur
+
+            token = _caller_bearer(request)
+            if not token:
+                return None
+            from researchclaw.server import papers_store
+
+            email = papers_store.owner_email(token)
+            if not email:
+                return None
+            url = os.environ["SUPABASE_URL"].rstrip("/")
+            req2 = _ur.Request(
+                f"{url}/rest/v1/e5o_users?select=llm_provider,llm_model,llm_key_secret&email=eq.{_up.quote(email)}&limit=1",
+                headers={"apikey": os.environ["SUPABASE_ANON_KEY"],
+                         "Authorization": f"Bearer {token}", "User-Agent": "researchclaw"},
+            )
+            with _ur.urlopen(req2, timeout=15) as resp:
+                rows = json.loads(resp.read().decode())
+            return rows[0] if isinstance(rows, list) and rows else None
+
+        try:
+            row = await _aio.to_thread(_user_row)
+        except Exception:
+            row = None
+        if row and row.get("llm_provider") in PROVIDERS:
+            provider_id = row["llm_provider"]
+            return {
+                "current": {
+                    "provider": provider_id,
+                    "model": row.get("llm_model") or "",
+                    "has_api_key": bool(row.get("llm_key_secret")) or _has_key(provider_id, config),
+                },
+                "providers": [
+                    {
+                        "id": pid,
+                        "label": info["label"],
+                        "models": info["models"],
+                        "api_key_env": info["api_key_env"],
+                        "has_api_key": (pid == provider_id and bool(row.get("llm_key_secret"))) or _has_key(pid, config),
+                    }
+                    for pid, info in PROVIDERS.items()
+                ],
+            }
+
     return {
         "current": _current(config),
         "providers": [
@@ -202,11 +282,41 @@ async def get_llm_settings() -> dict[str, Any]:
 
 
 @router.post("/api/llm/settings")
-async def set_llm_settings(update: LLMSettingsUpdate) -> dict[str, Any]:
+async def set_llm_settings(update: LLMSettingsUpdate, request: Request) -> dict[str, Any]:
     if update.provider not in PROVIDERS:
         raise HTTPException(400, f"Unknown provider: {update.provider}")
     if not update.model.strip():
         raise HTTPException(400, "Model is required")
+
+    if _auth_enabled():
+        # Per-user: store choice (and key, in Vault) on the caller's own row
+        import asyncio as _aio
+        import urllib.request as _ur
+
+        token = _caller_bearer(request)
+
+        def _save() -> None:
+            url = os.environ["SUPABASE_URL"].rstrip("/")
+            body = json.dumps({
+                "p_provider": update.provider,
+                "p_model": update.model.strip(),
+                "p_api_key": update.api_key.strip() or None,
+            }).encode()
+            req2 = _ur.Request(
+                f"{url}/rest/v1/rpc/e5o_save_my_llm",
+                data=body, method="POST",
+                headers={"apikey": os.environ["SUPABASE_ANON_KEY"],
+                         "Authorization": f"Bearer {token}",
+                         "Content-Type": "application/json", "User-Agent": "researchclaw"},
+            )
+            _ur.urlopen(req2, timeout=20).read()
+
+        try:
+            await _aio.to_thread(_save)
+        except Exception as exc:
+            raise HTTPException(500, f"Could not save settings: {exc}")
+        return {"ok": True, "current": {"provider": update.provider,
+                                        "model": update.model.strip(), "has_api_key": True}}
 
     state = _get_app_state()
     config = state["config"]
@@ -262,7 +372,7 @@ def _fetch_provider_models(provider_id: str, api_key: str) -> list[str]:
 
 
 @router.post("/api/llm/models")
-async def list_llm_models(req: LLMModelsRequest) -> dict[str, Any]:
+async def list_llm_models(req: LLMModelsRequest, request: Request) -> dict[str, Any]:
     """Validate the key by fetching the provider's full model list."""
     import asyncio
     import urllib.error
@@ -271,7 +381,8 @@ async def list_llm_models(req: LLMModelsRequest) -> dict[str, Any]:
         raise HTTPException(400, f"Unknown provider: {req.provider}")
 
     state = _get_app_state()
-    key = _resolve_key(req.provider, req.api_key.strip(), state["config"])
+    config_for_keys = await asyncio.to_thread(resolve_request_config, state["config"], request)
+    key = _resolve_key(req.provider, req.api_key.strip(), config_for_keys)
     if not key:
         return {
             "ok": False,
@@ -295,12 +406,12 @@ async def list_llm_models(req: LLMModelsRequest) -> dict[str, Any]:
 
 
 @router.post("/api/llm/test")
-async def test_llm_settings() -> dict[str, Any]:
+async def test_llm_settings(request: Request) -> dict[str, Any]:
     """Fire a one-token test request at the configured provider."""
     import asyncio
 
     state = _get_app_state()
-    config = state["config"]
+    config = await asyncio.to_thread(resolve_request_config, state["config"], request)
 
     def _probe() -> dict[str, Any]:
         from researchclaw.llm.client import LLMClient

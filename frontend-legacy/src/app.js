@@ -7,6 +7,7 @@
   // View registry
   const views = {
     newpaper: NewPaper,
+    mypapers: MyPapers,
     dashboard: Dashboard,
     pipeline: PipelineView,
     chat: ChatPanel,

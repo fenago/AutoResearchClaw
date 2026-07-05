@@ -106,7 +106,7 @@ const NewPaper = {
           You can watch every stage live and step away any time.</p>
       </div>
     `;
-    document.getElementById('np-start-btn').addEventListener('click', () => this._start(this._plan.topic));
+    document.getElementById('np-start-btn').addEventListener('click', () => this._start(this._plan.topic, this._plan));
     document.getElementById('np-edit-btn').addEventListener('click', () => { this._plan = null; this._renderIdea(); });
     document.getElementById('np-again-btn').addEventListener('click', () => { this._plan = null; this._renderIdea(); this._makePlanFromSaved(); });
   },
@@ -116,16 +116,19 @@ const NewPaper = {
     await this._makePlan();
   },
 
-  async _start(topic) {
+  async _start(topic, plan) {
     this._setStatus('Starting the pipeline…', true);
     try {
-      const res = await API.post('/pipeline/start', { topic, auto_approve: true });
+      const res = await API.post('/pipeline/start', {
+        topic, auto_approve: true,
+        title: plan ? plan.title : null, plan: plan || null,
+      });
       this._plan = null;
       this._setStatus('', true);
       // Jump to the live pipeline view
       const nav = document.querySelector('.nav-item[data-view="pipeline"]');
       if (nav) nav.click();
-      setTimeout(() => alert(`🚀 Your paper is underway!\nRun: ${res.run_id}\n\nWatch the stages on this Pipeline page — the finished paper will appear under 📄 Paper.`), 300);
+      setTimeout(() => alert(`🚀 Your paper is underway!\nRun: ${res.run_id}\n\nWatch the stages on this Pipeline page — the finished paper will be saved in 📚 My Papers.`), 300);
     } catch (e) {
       if (String(e.message).includes('409')) {
         this._setStatus('A paper is already being made — check the 🔬 Pipeline page. Stop it first to start a new one.', false);

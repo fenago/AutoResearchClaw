@@ -125,12 +125,14 @@ def create_app(
 
     from researchclaw.server.routes.admin import router as admin_router
     from researchclaw.server.routes.paper import router as paper_router
+    from researchclaw.server.routes.papers import router as papers_router
 
     app.include_router(pipeline_router)
     app.include_router(projects_router)
     app.include_router(llm_router)
     app.include_router(admin_router)
     app.include_router(paper_router)
+    app.include_router(papers_router)
 
     # Optional env override for the experiment mode (e.g. "simulated" for
     # lightweight web deployments without Docker/GPU).
