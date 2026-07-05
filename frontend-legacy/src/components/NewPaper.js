@@ -94,6 +94,20 @@ const NewPaper = {
           </ul>
         </div>
 
+        <div style="margin-top:18px">
+          <div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">How involved do you want to be?</div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            <label class="mode-opt" style="flex:1;min-width:220px;border:1px solid var(--glass-border);border-radius:12px;padding:12px 14px;cursor:pointer;display:flex;gap:10px;align-items:flex-start">
+              <input type="radio" name="np-mode" value="autopilot" checked style="margin-top:3px" />
+              <span><span style="font-weight:600">🚀 Autopilot</span><br><span style="font-size:12.5px;color:var(--text-muted)">Run start to finish on its own. Watch anytime.</span></span>
+            </label>
+            <label class="mode-opt" style="flex:1;min-width:220px;border:1px solid var(--glass-border);border-radius:12px;padding:12px 14px;cursor:pointer;display:flex;gap:10px;align-items:flex-start">
+              <input type="radio" name="np-mode" value="copilot" style="margin-top:3px" />
+              <span><span style="font-weight:600">🎛️ Co-pilot</span><br><span style="font-size:12.5px;color:var(--text-muted)">Pause at the key decisions so you can approve or steer.</span></span>
+            </label>
+          </div>
+        </div>
+
         <div style="display:flex;gap:10px;margin-top:16px;flex-wrap:wrap;align-items:center">
           <button id="np-start-btn"
             style="padding:11px 24px;font-size:15px;border:none;border-radius:8px;cursor:pointer;background:var(--success);color:#fff;font-weight:600">
@@ -109,7 +123,10 @@ const NewPaper = {
           You can watch every stage live and step away any time.</p>
       </div>
     `;
-    document.getElementById('np-start-btn').addEventListener('click', () => this._start(this._plan.topic, this._plan));
+    document.getElementById('np-start-btn').addEventListener('click', () => {
+      const mode = (document.querySelector('input[name="np-mode"]:checked') || {}).value || 'autopilot';
+      this._start(this._plan.topic, this._plan, mode);
+    });
     document.getElementById('np-edit-btn').addEventListener('click', () => { this._plan = null; this._renderIdea(); });
     document.getElementById('np-again-btn').addEventListener('click', () => { this._plan = null; this._renderIdea(); this._makePlanFromSaved(); });
   },
@@ -119,11 +136,11 @@ const NewPaper = {
     await this._makePlan();
   },
 
-  async _start(topic, plan) {
+  async _start(topic, plan, mode) {
     this._setStatus('Starting the pipeline…', true);
     try {
       const res = await API.post('/pipeline/start', {
-        topic, auto_approve: true,
+        topic, auto_approve: true, mode: mode || 'autopilot',
         title: plan ? plan.title : null, plan: plan || null,
       });
       this._plan = null;

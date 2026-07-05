@@ -126,6 +126,7 @@ def create_app(
     from researchclaw.server.routes.admin import router as admin_router
     from researchclaw.server.routes.paper import router as paper_router
     from researchclaw.server.routes.papers import router as papers_router
+    from researchclaw.server.routes.stage_detail import router as stage_detail_router
 
     app.include_router(pipeline_router)
     app.include_router(projects_router)
@@ -133,18 +134,22 @@ def create_app(
     app.include_router(admin_router)
     app.include_router(paper_router)
     app.include_router(papers_router)
+    app.include_router(stage_detail_router)
 
     # Optional env override for the experiment mode (e.g. "simulated" for
     # lightweight web deployments without Docker/GPU).
     _exp_mode = _os.environ.get("RC_EXPERIMENT_MODE", "")
-    if _exp_mode:
+    _sandbox_py = _os.environ.get("RC_SANDBOX_PYTHON", "")
+    if _exp_mode or _sandbox_py:
         import dataclasses as _dc
 
-        _app_state["config"] = _dc.replace(
-            _app_state["config"],
-            experiment=_dc.replace(_app_state["config"].experiment, mode=_exp_mode),
-        )
-        logger.info("Experiment mode overridden via env: %s", _exp_mode)
+        _exp = _app_state["config"].experiment
+        if _exp_mode:
+            _exp = _dc.replace(_exp, mode=_exp_mode)
+        if _sandbox_py:
+            _exp = _dc.replace(_exp, sandbox=_dc.replace(_exp.sandbox, python_path=_sandbox_py))
+        _app_state["config"] = _dc.replace(_app_state["config"], experiment=_exp)
+        logger.info("Experiment override: mode=%s python=%s", _exp_mode or "(unchanged)", _sandbox_py or "(unchanged)")
 
     # Re-apply a previously saved LLM provider/model choice
     saved_llm = load_saved_settings()

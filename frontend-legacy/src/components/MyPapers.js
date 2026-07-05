@@ -62,8 +62,9 @@ const MyPapers = {
   },
 
   _statusPill(status) {
-    const label = { running: 'Writing…', queued: 'Queued', completed: 'Ready', failed: 'Failed' }[status] || status;
-    return `<span class="g-pill ${status}">${label}</span>`;
+    const label = { running: 'Writing…', queued: 'Queued', completed: 'Ready', failed: 'Failed', paused: 'Paused', stopped: 'Stopped' }[status] || status;
+    const cls = { paused: 'running', stopped: 'failed' }[status] || status;
+    return `<span class="g-pill ${cls}">${label}</span>`;
   },
 
   _renderList(papers) {
@@ -134,11 +135,14 @@ const MyPapers = {
       const status = await API.pipelineStatus();
       if (status.run_id === this._detail.run_id) {
         this._live = status.progress || null;
-        if (['completed', 'failed'].includes(status.status)) {
+        this._status_waiting = status.waiting || null;
+        if (['completed', 'failed', 'paused', 'stopped'].includes(status.status)) {
           this._detail = await API.get(`/papers/${this._detail.id}`);
           this._stopPolling();
-          Toast[this._detail.status === 'completed' ? 'success' : 'error'](
-            this._detail.status === 'completed' ? 'Your paper is ready! 🎉' : 'The run hit a problem.');
+          const st = this._detail.status;
+          if (st === 'completed') Toast.success('Your paper is ready! 🎉');
+          else if (st === 'paused') Toast.info('Paused — resume whenever you like.');
+          else if (st !== 'stopped') Toast.error('The run hit a problem.');
           return this._renderDetail();
         }
       } else if (status.status === 'idle' || status.run_id !== this._detail.run_id) {
@@ -173,19 +177,23 @@ const MyPapers = {
             </div>
             ${this._statusPill(p.status)}
           </div>
+          ${p.plan && p.plan.copilot ? `<p style="font-size:12px;color:var(--accent);margin-top:8px">🎛️ Co-pilot mode — I'll pause at the key decisions for your call.</p>` : ''}
           ${p.status === 'queued' ? `
             <p style="margin-top:14px;font-size:13px;color:var(--text-secondary)">⏳ In line — another paper is being written right now. Yours starts automatically when it finishes.</p>` : ''}
-          ${p.status === 'failed' ? `
-            <div style="margin-top:14px;padding:12px;border:1px solid var(--error);border-radius:10px;font-size:13px">
-              Something went wrong: ${p.error || 'unknown error'}.
-              <button id="paper-retry" class="g-btn subtle" style="margin-left:10px">↻ Try again</button>
+          ${(p.status === 'failed' || p.status === 'stopped') ? `
+            <div style="margin-top:14px;padding:12px;border:1px solid ${p.status === 'stopped' ? 'var(--glass-border)' : 'var(--error)'};border-radius:10px;font-size:13px">
+              ${p.status === 'stopped' ? 'This run was stopped.' : ('Something went wrong: ' + (p.error || 'unknown error') + '.')}
+              <button id="paper-retry" class="g-btn subtle" style="margin-left:10px">↻ Start over</button>
             </div>` : ''}
-          ${p.status === 'completed' ? `
-            <div style="display:flex;gap:8px;margin-top:16px">
-              ${p.paper_md ? '<button class="g-btn primary dl-btn" data-kind="md">⬇ Download (Markdown)</button>' : ''}
-              ${p.paper_tex ? '<button class="g-btn dl-btn" data-kind="tex">⬇ Download (LaTeX)</button>' : ''}
-            </div>` : ''}
+          <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
+            ${running ? '<button id="paper-pause" class="g-btn subtle">⏸ Pause after this stage</button>' : ''}
+            ${p.status === 'paused' ? '<button id="paper-resume" class="g-btn primary">▶ Resume</button>' : ''}
+            ${p.status === 'completed' && p.paper_md ? '<button class="g-btn primary dl-btn" data-kind="md">⬇ Download (Markdown)</button>' : ''}
+            ${p.status === 'completed' && p.paper_tex ? '<button class="g-btn dl-btn" data-kind="tex">⬇ Download (LaTeX)</button>' : ''}
+          </div>
         </div>
+
+        <div id="gate-card"></div>
 
         <div class="card" style="margin-bottom:16px">
           <div style="display:flex;align-items:baseline;gap:10px">
@@ -231,6 +239,10 @@ const MyPapers = {
     });
     const retry = document.getElementById('paper-retry');
     if (retry) retry.addEventListener('click', () => this._retry());
+    const pauseBtn = document.getElementById('paper-pause');
+    if (pauseBtn) pauseBtn.addEventListener('click', () => this._pause());
+    const resumeBtn = document.getElementById('paper-resume');
+    if (resumeBtn) resumeBtn.addEventListener('click', () => this._resume());
     const send = document.getElementById('paper-chat-send');
     const input = document.getElementById('paper-chat-input');
     if (send && input) {
@@ -308,19 +320,62 @@ const MyPapers = {
       work.innerHTML = `<div style="font-size:13px;color:var(--text-muted)">Connecting to the live run…</div>`;
     }
 
+    const canRedo = ['completed', 'failed', 'stopped', 'paused'].includes(p.status);
     let html = '', phase = '';
     stages.forEach((s, i) => {
       if (s.phase !== phase) { phase = s.phase; html += `<div class="stage-phase">${phase}</div>`; }
       html += `
-        <div class="stage-item ${s.state}">
+        <div class="stage-item ${s.state}" data-stage="${i + 1}" style="cursor:pointer" title="Click to see what happened here">
           <div class="dot">${s.state === 'done' ? '✓' : ''}</div>
           <div style="flex:1">
-            <div class="stage-label">${i + 1}. ${s.label}</div>
+            <div class="stage-label">${i + 1}. ${s.label} <span style="opacity:.5;font-size:11px">›</span></div>
             ${summaries[s.key] ? `<div class="stage-summary">${summaries[s.key]}</div>` : ''}
           </div>
+          ${canRedo && s.state === 'done' ? `<button class="stage-redo" data-redo="${i + 1}" title="Redo from this step" style="background:none;border:1px solid var(--glass-border);border-radius:6px;color:var(--text-muted);cursor:pointer;font-size:11px;padding:2px 7px;align-self:center">↻</button>` : ''}
         </div>`;
     });
     rail.innerHTML = html;
+
+    // Click a stage → open the transparency drawer (what/reasoning/files)
+    rail.querySelectorAll('.stage-item').forEach(el => {
+      el.addEventListener('click', (e) => {
+        if (e.target.closest('.stage-redo')) return;
+        if (typeof StageDrawer !== 'undefined') StageDrawer.open(p.id, parseInt(el.dataset.stage, 10));
+      });
+    });
+    rail.querySelectorAll('.stage-redo').forEach(btn => {
+      btn.addEventListener('click', (e) => { e.stopPropagation(); this._redo(parseInt(btn.dataset.redo, 10)); });
+    });
+
+    // Co-pilot decision card when the run is waiting at a gate
+    this._renderGateCard();
+  },
+
+  _renderGateCard() {
+    const host = document.getElementById('gate-card');
+    if (!host) return;
+    const w = (this._live && this._status_waiting) ? this._status_waiting : null;
+    if (!w) { host.innerHTML = ''; return; }
+    host.innerHTML = `
+      <div class="card" style="margin-bottom:16px;border:1px solid var(--accent)">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+          <span style="font-size:16px">🎛️</span>
+          <h3 style="font-size:15px">Your call: ${w.stage_name || 'a key decision'}</h3>
+        </div>
+        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:8px">
+          I've paused so you can review this step before I go on. ${w.context_summary || ''}
+          Click the stage above to see exactly what I produced.</p>
+        <textarea id="gate-guidance" class="g-textarea" rows="2" placeholder="Optional: tell me what to change or emphasize…" style="margin-bottom:10px"></textarea>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button id="gate-approve" class="g-btn success">✓ Looks right — continue</button>
+          <button id="gate-adjust" class="g-btn primary">✎ Continue with my notes</button>
+          <button id="gate-reject" class="g-btn danger">✗ Stop — this isn't right</button>
+        </div>
+      </div>`;
+    const g = () => (document.getElementById('gate-guidance') || {}).value || '';
+    document.getElementById('gate-approve').addEventListener('click', () => this._gate('approve', ''));
+    document.getElementById('gate-adjust').addEventListener('click', () => this._gate('adjust', g()));
+    document.getElementById('gate-reject').addEventListener('click', () => this._gate('reject', g()));
   },
 
   _startTicker() {
@@ -362,6 +417,7 @@ const MyPapers = {
       const p = this._detail;
       const res = await API.post('/pipeline/start', {
         topic: p.topic, title: p.title, plan: p.plan, auto_approve: true,
+        mode: (p.plan && p.plan.copilot) ? 'copilot' : 'autopilot',
       });
       Toast.success('Restarted — writing your paper again.');
       const row = await API.get(`/papers/by-run/${res.run_id}`);
@@ -371,6 +427,53 @@ const MyPapers = {
         ? 'Another paper is currently being written — wait for it to finish first.'
         : `Couldn't restart: ${e.message}`);
     }
+  },
+
+  async _pause() {
+    try {
+      await API.post('/pipeline/stop', {});
+      Toast.info('Pausing after the current stage finishes…');
+    } catch (e) { Toast.error(`Couldn't pause: ${e.message}`); }
+  },
+
+  async _resume() {
+    try {
+      await API.post('/pipeline/resume', { run_id: this._detail.run_id });
+      Toast.success('Resuming your paper.');
+      this._detail = await API.get(`/papers/${this._detail.id}`);
+      this._renderDetail();
+      this._startPolling();
+    } catch (e) {
+      Toast.error(String(e.message).includes('409')
+        ? 'Another paper is being written right now — try again when it finishes.'
+        : `Couldn't resume: ${e.message}`);
+    }
+  },
+
+  async _redo(stage) {
+    const note = prompt(`Redo from step ${stage}. Add any direction (optional):`, '');
+    if (note === null) return;  // cancelled
+    try {
+      await API.post('/pipeline/redo', { run_id: this._detail.run_id, stage, guidance: note || '' });
+      Toast.success(`Re-running from step ${stage}.`);
+      this._detail = await API.get(`/papers/${this._detail.id}`);
+      this._renderDetail();
+      this._startPolling();
+    } catch (e) {
+      Toast.error(String(e.message).includes('409')
+        ? 'Another paper is being written right now — try again when it finishes.'
+        : `Couldn't redo: ${e.message}`);
+    }
+  },
+
+  async _gate(decision, guidance) {
+    try {
+      await API.post('/pipeline/gate', { run_id: this._detail.run_id, decision, guidance: guidance || '' });
+      this._status_waiting = null;
+      const host = document.getElementById('gate-card');
+      if (host) host.innerHTML = '';
+      Toast.success(decision === 'reject' ? 'Stopping the run.' : 'Continuing…');
+    } catch (e) { Toast.error(`Couldn't send that: ${e.message}`); }
   },
 
   _download(name, content) {

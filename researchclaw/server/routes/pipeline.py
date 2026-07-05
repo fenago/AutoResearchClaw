@@ -38,6 +38,7 @@ class PipelineStartRequest(BaseModel):
     auto_approve: bool = True
     title: str | None = None
     plan: dict[str, Any] | None = None
+    mode: str = "autopilot"  # "autopilot" | "copilot"
 
 
 class PipelineStartResponse(BaseModel):
@@ -88,20 +89,28 @@ async def _launch_run(
     preload_log: list | None = None,
     preload_files: dict | None = None,
     persist_start: bool = True,
+    copilot: bool = False,
 ) -> None:
     """Start (or resume) a pipeline run in the background. Caller holds _run_lock."""
     global _active_run, _run_task
+    import threading
 
     state = _get_app_state()
     run_dir = _validated_run_dir(run_id)
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    cancel_event = threading.Event()
     _active_run = {
         "run_id": run_id,
         "status": "running",
         "output_dir": str(run_dir),
         "topic": config.research.topic,
         "owner": owner_email,
+        "copilot": copilot,
+        "cancel_event": cancel_event,
+        "pausing": False,
+        "title": title or config.research.topic,
+        "plan": plan,
     }
 
     from researchclaw.server import papers_store
@@ -149,6 +158,20 @@ async def _launch_run(
             if from_stage is not None:
                 kwargs["from_stage"] = from_stage
 
+            # Co-pilot: pause at decision gates (stages 5, 9, 20) and wait for
+            # the owner's approve/reject/adjust via run_dir/hitl/response.json.
+            adapters = AdapterBundle()
+            if copilot:
+                try:
+                    from researchclaw.hitl.presets import get_preset
+                    from researchclaw.hitl.session import HITLSession
+
+                    hitl_cfg = get_preset("gate-only")
+                    session = HITLSession(run_id=run_id, config=hitl_cfg, run_dir=run_dir)
+                    adapters = AdapterBundle(hitl=session)
+                except Exception:
+                    logger.warning("co-pilot HITL wiring failed; running autopilot", exc_info=True)
+
             loop = asyncio.get_event_loop()
             results = await loop.run_in_executor(
                 None,
@@ -156,20 +179,39 @@ async def _launch_run(
                     run_dir=run_dir,
                     run_id=run_id,
                     config=config,
-                    adapters=AdapterBundle(),
-                    auto_approve_gates=True,
+                    adapters=adapters,
+                    auto_approve_gates=not copilot,
                     skip_noncritical=True,
                     kb_root=kb_root,
+                    cancel_event=cancel_event,
                     **kwargs,
                 ),
             )
             done = sum(1 for r in results if r.status.value == "done")
             failed = sum(1 for r in results if r.status.value == "failed")
-            final_status = "completed" if failed == 0 else "failed"
+            statuses = [r.status.value for r in results]
+            last = results[-1] if results else None
+            block_msg = ""
+            if _active_run and _active_run.get("pausing"):
+                final_status = "paused"
+            elif "rejected" in statuses:
+                final_status = "stopped"
+            elif failed > 0:
+                final_status = "failed"
+            elif last is not None and last.status.value == "paused":
+                # Engine hard-block (e.g. a stage refused to proceed) — surface it
+                final_status = "failed"
+                block_msg = getattr(last, "error", "") or "The run stopped before finishing."
+            elif last is not None and last.status.value == "done" and int(last.stage) >= 23:
+                final_status = "completed"
+            else:
+                final_status = "stopped"
             if _active_run:
                 _active_run["status"] = final_status
                 _active_run["stages_done"] = done
                 _active_run["stages_failed"] = failed
+                if block_msg:
+                    _active_run["error"] = block_msg
             watcher.stop()
             try:
                 await watcher.finalize()
@@ -177,7 +219,8 @@ async def _launch_run(
                 logger.debug("watcher finalize failed", exc_info=True)
             if papers_store.enabled():
                 deliverables = papers_store.collect_deliverables(run_dir)
-                papers_store.upsert_paper(run_id, status=final_status, **deliverables)
+                extra = {"error": block_msg[:500]} if block_msg else {}
+                papers_store.upsert_paper(run_id, status=final_status, **deliverables, **extra)
         except Exception as exc:
             logger.exception("Pipeline run failed")
             if _active_run:
@@ -240,6 +283,7 @@ async def _drain_queue() -> None:
         await _launch_run(
             nxt["run_id"], config,
             owner_email=owner, title=nxt.get("title"), plan=nxt.get("plan"),
+            copilot=bool((nxt.get("plan") or {}).get("copilot")),
         )
 
 
@@ -313,6 +357,10 @@ async def start_pipeline(req: PipelineStartRequest, request: Request) -> Pipelin
         )
 
     run_id = _new_run_id(config.research.topic)
+    copilot = req.mode == "copilot"
+    # Persist co-pilot choice inside the plan so resume/redo/queue honor it.
+    plan = dict(req.plan or {})
+    plan["copilot"] = copilot
 
     async with _run_lock:
         if _active_run and _active_run.get("status") == "running":
@@ -326,7 +374,7 @@ async def start_pipeline(req: PipelineStartRequest, request: Request) -> Pipelin
                     owner_email=owner or "unknown",
                     title=req.title or config.research.topic,
                     topic=config.research.topic,
-                    plan=req.plan,
+                    plan=plan,
                     status="queued",
                 ),
             )
@@ -334,7 +382,7 @@ async def start_pipeline(req: PipelineStartRequest, request: Request) -> Pipelin
 
         await _launch_run(
             run_id, config,
-            owner_email=owner, title=req.title, plan=req.plan,
+            owner_email=owner, title=req.title, plan=plan, copilot=copilot,
         )
 
     return PipelineStartResponse(
@@ -344,17 +392,33 @@ async def start_pipeline(req: PipelineStartRequest, request: Request) -> Pipelin
     )
 
 
+_NONSERIALIZABLE = {"watcher", "cancel_event"}
+
+
+def _waiting_state(run_dir: Path) -> dict | None:
+    """Read run_dir/hitl/waiting.json if the run is paused at a gate."""
+    wpath = run_dir / "hitl" / "waiting.json"
+    if wpath.is_file():
+        try:
+            return json.loads(wpath.read_text())
+        except Exception:
+            return None
+    return None
+
+
 @router.post("/pipeline/stop")
 async def stop_pipeline() -> dict[str, str]:
-    """Stop the currently running pipeline."""
-    global _active_run, _run_task
+    """Stop the currently running pipeline (after the current stage finishes)."""
+    global _active_run
 
-    if not _run_task or not _active_run:
+    if not _active_run or _active_run.get("status") != "running":
         raise HTTPException(status_code=404, detail="No pipeline is running")
 
-    _run_task.cancel()
-    _active_run["status"] = "stopped"
-    return {"status": "stopped"}
+    _active_run["pausing"] = True
+    ev = _active_run.get("cancel_event")
+    if ev:
+        ev.set()
+    return {"status": "stopping"}
 
 
 @router.get("/pipeline/status")
@@ -362,11 +426,163 @@ async def pipeline_status() -> dict[str, Any]:
     """Get current pipeline run status (with live stage progress)."""
     if not _active_run:
         return {"status": "idle"}
-    out = {k: v for k, v in _active_run.items() if k != "watcher"}
+    out = {k: v for k, v in _active_run.items() if k not in _NONSERIALIZABLE}
     watcher = _active_run.get("watcher")
     if watcher:
         out["progress"] = watcher.snapshot()
+    run_dir = _validated_run_dir(_active_run["run_id"])
+    waiting = _waiting_state(run_dir)
+    if waiting:
+        out["waiting"] = waiting
     return out
+
+
+class GateDecision(BaseModel):
+    run_id: str
+    decision: str  # "approve" | "reject" | "adjust"
+    guidance: str = ""
+
+
+class ResumeRequest(BaseModel):
+    run_id: str
+
+
+class RedoRequest(BaseModel):
+    run_id: str
+    stage: int
+    guidance: str = ""
+
+
+def _user_bearer(request: Request) -> str:
+    auth = request.headers.get("authorization", "")
+    return auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
+
+
+def _fetch_paper_row(request: Request, run_id: str) -> dict:
+    """Fetch a paper row via the caller's own token (RLS enforces ownership)."""
+    import os
+    import urllib.parse
+    import urllib.request
+
+    url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+    anon = os.environ.get("SUPABASE_ANON_KEY", "")
+    token = _user_bearer(request)
+    if not (url and anon and token):
+        raise HTTPException(400, "Paper library is not configured")
+    q = f"{url}/rest/v1/e5o_papers?run_id=eq.{urllib.parse.quote(run_id)}&select=*"
+    req = urllib.request.Request(
+        q, headers={"apikey": anon, "Authorization": f"Bearer {token}",
+                    "User-Agent": "researchclaw"})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        rows = json.loads(resp.read().decode())
+    if not rows:
+        raise HTTPException(404, "Paper not found")
+    return rows[0]
+
+
+@router.post("/pipeline/gate")
+async def pipeline_gate(req: GateDecision, request: Request) -> dict[str, Any]:
+    """Answer a co-pilot decision gate: approve / reject / adjust (with guidance)."""
+    if not _active_run or _active_run.get("run_id") != req.run_id:
+        raise HTTPException(409, "This paper is not currently waiting for a decision.")
+    run_dir = _validated_run_dir(req.run_id)
+    hitl_dir = run_dir / "hitl"
+    hitl_dir.mkdir(parents=True, exist_ok=True)
+
+    waiting = _waiting_state(run_dir) or {}
+    stage_num = waiting.get("stage")
+
+    def _write() -> None:
+        import os
+        import tempfile
+
+        if req.decision == "adjust" and req.guidance.strip() and stage_num:
+            # Guidance in the current gate stage dir is auto-injected into every
+            # downstream stage's prompt, then we approve to continue.
+            sd = run_dir / f"stage-{int(stage_num):02d}"
+            sd.mkdir(parents=True, exist_ok=True)
+            existing = ""
+            gp = sd / "hitl_guidance.md"
+            if gp.is_file():
+                existing = gp.read_text() + "\n\n"
+            gp.write_text(existing + "Director's guidance: " + req.guidance.strip())
+            action = {"action": "approve", "message": "Approved with guidance"}
+        elif req.decision == "reject":
+            action = {"action": "reject", "message": req.guidance.strip() or "Rejected"}
+        else:
+            action = {"action": "approve", "message": req.guidance.strip() or "Approved"}
+
+        # atomic write so the poller never reads a half-written file
+        fd, tmp = tempfile.mkstemp(dir=hitl_dir, suffix=".tmp")
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(action))
+        os.replace(tmp, hitl_dir / "response.json")
+
+    await asyncio.get_event_loop().run_in_executor(None, _write)
+    return {"ok": True, "decision": req.decision}
+
+
+async def _restore_and_launch(row: dict, from_stage_num: int | None, guidance: str = "") -> None:
+    """Restore a paper's run dir from the library and (re)launch it. Holds _run_lock."""
+    from researchclaw.server import papers_store
+    from researchclaw.pipeline.runner import Stage, read_checkpoint
+
+    run_id = row["run_id"]
+    owner = row.get("owner_email") or ""
+    run_files = row.get("run_files") or {}
+    run_dir = _validated_run_dir(run_id)
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    # Restore snapshot if the run dir is empty (e.g. after a deploy)
+    if run_files and not any(run_dir.glob("stage-*")):
+        await asyncio.get_event_loop().run_in_executor(
+            None, lambda: papers_store.restore_run_dir(run_dir, run_files))
+
+    if from_stage_num is not None:
+        from_stage = Stage(from_stage_num)
+        # Optional steering: drop guidance into the stage dir (auto-injected downstream)
+        if guidance.strip():
+            sd = run_dir / f"stage-{from_stage_num:02d}"
+            sd.mkdir(parents=True, exist_ok=True)
+            (sd / "hitl_guidance.md").write_text("Director's guidance: " + guidance.strip())
+    else:
+        from_stage = read_checkpoint(run_dir) or Stage.TOPIC_INIT
+
+    config = _apply_topic(_owner_config(owner), row.get("topic"))
+    await _launch_run(
+        run_id, config,
+        owner_email=owner, title=row.get("title"), plan=row.get("plan"),
+        from_stage=from_stage,
+        preload_log=row.get("stage_log"), preload_files=run_files,
+        persist_start=True,
+        copilot=bool(row.get("plan", {}) and (row["plan"] or {}).get("copilot")),
+    )
+
+
+@router.post("/pipeline/resume")
+async def pipeline_resume(req: ResumeRequest, request: Request) -> dict[str, Any]:
+    """Resume a paused/stopped paper from its last checkpoint."""
+    row = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: _fetch_paper_row(request, req.run_id))
+    async with _run_lock:
+        if _active_run and _active_run.get("status") == "running":
+            raise HTTPException(409, "Another paper is being written right now.")
+        await _restore_and_launch(row, None)
+    return {"ok": True, "status": "running"}
+
+
+@router.post("/pipeline/redo")
+async def pipeline_redo(req: RedoRequest, request: Request) -> dict[str, Any]:
+    """Re-run a paper from a chosen stage, optionally with new direction."""
+    if req.stage < 1 or req.stage > 23:
+        raise HTTPException(400, "Stage must be 1-23")
+    row = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: _fetch_paper_row(request, req.run_id))
+    async with _run_lock:
+        if _active_run and _active_run.get("status") == "running":
+            raise HTTPException(409, "Another paper is being written right now.")
+        await _restore_and_launch(row, req.stage, req.guidance)
+    return {"ok": True, "status": "running", "from_stage": req.stage}
 
 
 @router.get("/pipeline/stages")

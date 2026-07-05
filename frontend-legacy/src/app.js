@@ -128,5 +128,42 @@
     } catch (e) {
       console.warn('Health check failed:', e);
     }
+
+    // Honest live sidebar entry: shows the paper being written right now, with
+    // live percent, linking straight to it. Appears only when a run is active.
+    async function refreshLiveNav() {
+      try {
+        const status = await API.pipelineStatus();
+        let el = document.getElementById('live-run-nav');
+        if (status.status === 'running' && status.run_id) {
+          const pct = (status.progress && status.progress.percent) || 0;
+          const title = status.title || 'your paper';
+          const waiting = status.waiting ? ' · needs you' : '';
+          if (!el) {
+            const nav = document.querySelector('.sidebar');
+            if (nav) {
+              const box = document.createElement('div');
+              box.className = 'sidebar-section';
+              box.id = 'live-run-section';
+              box.innerHTML = `<h3>Live</h3><a class="nav-item" id="live-run-nav" href="#"></a>`;
+              nav.insertBefore(box, nav.firstChild);
+              el = document.getElementById('live-run-nav');
+            }
+          }
+          if (el) {
+            el.innerHTML = `<span class="live-dot"></span> <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${title}</span> <span style="font-size:11px;color:var(--accent)">${pct}%${waiting}</span>`;
+            el.onclick = async (e) => {
+              e.preventDefault();
+              try { const row = await API.get(`/papers/by-run/${status.run_id}`); location.hash = `papers/${row.id}`; } catch (_) {}
+            };
+          }
+        } else {
+          const sec = document.getElementById('live-run-section');
+          if (sec) sec.remove();
+        }
+      } catch (e) { /* ignore */ }
+    }
+    refreshLiveNav();
+    setInterval(refreshLiveNav, 7000);
   });
 })();

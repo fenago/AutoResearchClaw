@@ -23,5 +23,9 @@ COPY website ./website
 # fastapi/starlette pinned: starlette 1.x rejects WebSocket upgrades on this app (403)
 RUN pip install "pyyaml>=6.0" "rich>=13.0" "arxiv>=2.1" "numpy>=1.24" httpx "fastapi==0.115.12" "starlette<0.47" "uvicorn[standard]==0.34.2"
 
+# Scientific stack so sandbox-mode experiments (CPU) run for real, producing
+# genuine papers instead of the simulated-data block. Kept CPU-only (no torch).
+RUN pip install "scipy>=1.10" "scikit-learn>=1.3" "pandas>=2.0" "matplotlib>=3.7" "statsmodels>=0.14"
+
 EXPOSE 8080
 CMD ["python", "-m", "researchclaw", "serve", "--config", "/app/config.yaml", "--host", "0.0.0.0", "--port", "8080"]

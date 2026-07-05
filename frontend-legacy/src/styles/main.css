@@ -540,3 +540,10 @@ body {
 @keyframes ellipsis {
   0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; }
 }
+
+/* Live sidebar entry */
+#live-run-nav { display: flex; align-items: center; gap: 8px; }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: none; animation: throb 1.5s ease infinite; }
+.stage-item:hover { background: var(--glass-highlight); }
+.stage-redo:hover { color: var(--accent); border-color: var(--accent); }
+.mode-opt:has(input:checked) { border-color: var(--accent); background: linear-gradient(90deg, rgba(88,166,255,0.08), transparent); }
