@@ -174,6 +174,7 @@ const MyPapers = {
               <h2 style="font-size:20px;line-height:1.3">${p.title || p.topic || 'Untitled paper'}</h2>
               <p style="font-size:13px;color:var(--text-muted);margin-top:6px">${p.topic || ''}</p>
               ${p.plan && p.plan.hypothesis ? `<p style="font-size:13px;color:var(--text-secondary);margin-top:8px;font-style:italic">Hypothesis under test: ${p.plan.hypothesis}</p>` : ''}
+              ${p.plan && p.plan.research_type ? `<p style="font-size:12.5px;color:var(--text-muted);margin-top:6px">📐 ${p.plan.research_type.paradigm || ''}${p.plan.research_type.design ? ' · ' + p.plan.research_type.design : ''}${p.plan.research_type.summary ? ' — ' + p.plan.research_type.summary : ''}</p>` : ''}
             </div>
             ${this._statusPill(p.status)}
           </div>
@@ -418,6 +419,7 @@ const MyPapers = {
       const res = await API.post('/pipeline/start', {
         topic: p.topic, title: p.title, plan: p.plan, auto_approve: true,
         mode: (p.plan && p.plan.copilot) ? 'copilot' : 'autopilot',
+        gate_stages: (p.plan && p.plan.copilot) ? (p.plan.gate_stages || null) : null,
       });
       Toast.success('Restarted — writing your paper again.');
       const row = await API.get(`/papers/by-run/${res.run_id}`);

@@ -33,6 +33,13 @@ Respond with ONLY a JSON object with these keys:
   left to the evidence
 - "approach": an array of 3-5 short bullet strings describing how the research
   will proceed (literature review, hypothesis, experiments, analysis, writing)
+- "research_type": an object classifying the methodology, with keys:
+    "paradigm": one of "Quantitative", "Qualitative", or "Mixed methods"
+    "design": the specific design in 2-4 words (e.g. "Controlled experiment",
+      "Computational/empirical study", "Comparative benchmark study",
+      "Observational/correlational study", "Simulation study")
+    "summary": one plain-English sentence a non-expert can understand,
+      saying what kind of research this is and why
 
 User's idea:
 {idea}"""

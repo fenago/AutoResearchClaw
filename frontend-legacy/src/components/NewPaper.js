@@ -2,9 +2,23 @@
  * NewPaper — the dead-simple front door: describe your idea, confirm the
  * AI-drafted plan, start the pipeline. No technical setup.
  */
+const NP_STAGES = [
+  [1,'Understanding your idea'],[2,'Breaking it into research questions'],[3,'Planning the literature search'],
+  [4,'Collecting papers'],[5,'Screening for relevance'],[6,'Extracting key findings'],
+  [7,"Synthesizing what's known"],[8,'Forming the hypothesis'],[9,'Designing the experiments'],
+  [10,'Writing the experiment code'],[11,'Planning compute resources'],[12,'Running the experiments'],
+  [13,'Refining the experiments'],[14,'Analyzing the results'],[15,'Deciding how to proceed'],
+  [16,'Outlining the paper'],[17,'Writing the draft'],[18,'Running peer review'],
+  [19,'Revising the paper'],[20,'Final quality checks'],[21,'Archiving what was learned'],
+  [22,'Exporting the deliverables'],[23,'Verifying every citation'],
+];
+const NP_KEY_GATES = [5, 9, 20];
+
 const NewPaper = {
   _plan: null,
   _idea: '',
+  _gateLevel: 'gates',       // 'gates' | 'every' | 'custom'
+  _customGates: [5, 9, 20],
 
   render(container) {
     this._container = container;
@@ -112,6 +126,12 @@ const NewPaper = {
           <div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">The hypothesis we'll test</div>
           <div style="font-size:14px;margin:2px 0 14px">${p.hypothesis || ''}</div>
 
+          ${p.research_type ? `<div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Type of research</div>
+          <div style="font-size:14px;margin:2px 0 14px">
+            <span style="display:inline-block;padding:2px 10px;border-radius:999px;background:var(--glass-highlight);border:1px solid var(--glass-border);font-size:12.5px;font-weight:600;color:var(--accent)">${p.research_type.paradigm || ''}${p.research_type.design ? ' · ' + p.research_type.design : ''}</span>
+            <div style="color:var(--text-secondary);margin-top:5px">${p.research_type.summary || ''}</div>
+          </div>` : ''}
+
           <div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">What the paper will find out</div>
           <div style="font-size:14px;margin:2px 0 14px">${p.goal}</div>
 
@@ -125,13 +145,29 @@ const NewPaper = {
           <div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">How involved do you want to be?</div>
           <div style="display:flex;gap:10px;flex-wrap:wrap">
             <label class="mode-opt" style="flex:1;min-width:220px;border:1px solid var(--glass-border);border-radius:12px;padding:12px 14px;cursor:pointer;display:flex;gap:10px;align-items:flex-start">
-              <input type="radio" name="np-mode" value="autopilot" checked style="margin-top:3px" />
-              <span><span style="font-weight:600">🚀 Autopilot</span><br><span style="font-size:12.5px;color:var(--text-muted)">Run start to finish on its own. Watch anytime.</span></span>
+              <input type="radio" name="np-mode" value="copilot" checked style="margin-top:3px" />
+              <span><span style="font-weight:600">🎛️ Co-pilot</span><br><span style="font-size:12.5px;color:var(--text-muted)">Pause so you can approve or steer. You choose where.</span></span>
             </label>
             <label class="mode-opt" style="flex:1;min-width:220px;border:1px solid var(--glass-border);border-radius:12px;padding:12px 14px;cursor:pointer;display:flex;gap:10px;align-items:flex-start">
-              <input type="radio" name="np-mode" value="copilot" style="margin-top:3px" />
-              <span><span style="font-weight:600">🎛️ Co-pilot</span><br><span style="font-size:12.5px;color:var(--text-muted)">Pause at the key decisions so you can approve or steer.</span></span>
+              <input type="radio" name="np-mode" value="autopilot" style="margin-top:3px" />
+              <span><span style="font-weight:600">🚀 Autopilot</span><br><span style="font-size:12.5px;color:var(--text-muted)">Run start to finish on its own. Watch anytime.</span></span>
             </label>
+          </div>
+
+          <div id="np-gate-panel" style="margin-top:12px;border:1px solid var(--glass-border);border-radius:12px;padding:14px;background:var(--glass-highlight)">
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">Where should I pause for your approval?</div>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <label style="display:flex;gap:8px;align-items:center;cursor:pointer;font-size:13px">
+                <input type="radio" name="np-gate-level" value="gates" checked /> Only the key decisions <span style="color:var(--text-muted)">(3: literature, experiment design, quality)</span></label>
+              <label style="display:flex;gap:8px;align-items:center;cursor:pointer;font-size:13px">
+                <input type="radio" name="np-gate-level" value="every" /> Every step <span style="color:var(--text-muted)">(all 23 — most control)</span></label>
+              <label style="display:flex;gap:8px;align-items:center;cursor:pointer;font-size:13px">
+                <input type="radio" name="np-gate-level" value="custom" /> Let me choose the steps…</label>
+            </div>
+            <div id="np-custom-stages" style="display:none;margin-top:10px;max-height:200px;overflow-y:auto;border-top:1px solid var(--glass-border);padding-top:10px">
+              ${NP_STAGES.map(([n,label]) => `<label style="display:flex;gap:8px;align-items:center;font-size:12.5px;padding:3px 0;cursor:pointer">
+                <input type="checkbox" class="np-stage-ck" value="${n}" ${NP_KEY_GATES.includes(n) ? 'checked' : ''} /> <span style="color:var(--text-muted);width:22px">${n}.</span> ${label} ${NP_KEY_GATES.includes(n) ? '<span style="color:var(--accent);font-size:11px">◆ gate</span>' : ''}</label>`).join('')}
+            </div>
           </div>
         </div>
 
@@ -151,9 +187,21 @@ const NewPaper = {
         </div>
       </div>
     `;
+    const syncGatePanel = () => {
+      const mode = (document.querySelector('input[name="np-mode"]:checked') || {}).value;
+      const panel = document.getElementById('np-gate-panel');
+      if (panel) panel.style.display = mode === 'copilot' ? 'block' : 'none';
+      const level = (document.querySelector('input[name="np-gate-level"]:checked') || {}).value;
+      const custom = document.getElementById('np-custom-stages');
+      if (custom) custom.style.display = level === 'custom' ? 'block' : 'none';
+    };
+    document.querySelectorAll('input[name="np-mode"]').forEach(r => r.addEventListener('change', syncGatePanel));
+    document.querySelectorAll('input[name="np-gate-level"]').forEach(r => r.addEventListener('change', syncGatePanel));
+    syncGatePanel();
+
     document.getElementById('np-start-btn').addEventListener('click', () => {
-      const mode = (document.querySelector('input[name="np-mode"]:checked') || {}).value || 'autopilot';
-      this._start(this._plan.topic, this._plan, mode);
+      const mode = (document.querySelector('input[name="np-mode"]:checked') || {}).value || 'copilot';
+      this._start(this._plan.topic, this._plan, mode, this._gateStagesFromUI());
     });
     document.getElementById('np-edit-btn').addEventListener('click', () => { this._plan = null; this._renderIdea(); });
     document.getElementById('np-again-btn').addEventListener('click', () => { this._plan = null; this._renderIdea(); this._makePlanFromSaved(); });
@@ -170,11 +218,21 @@ const NewPaper = {
     await this._makePlan();
   },
 
-  async _start(topic, plan, mode) {
+  _gateStagesFromUI() {
+    const level = (document.querySelector('input[name="np-gate-level"]:checked') || {}).value || 'gates';
+    if (level === 'every') return NP_STAGES.map(s => s[0]);
+    if (level === 'custom') {
+      return Array.from(document.querySelectorAll('.np-stage-ck:checked')).map(c => parseInt(c.value, 10));
+    }
+    return NP_KEY_GATES.slice();
+  },
+
+  async _start(topic, plan, mode, gateStages) {
     this._setStatus('Starting the pipeline…', true);
     try {
       const res = await API.post('/pipeline/start', {
-        topic, auto_approve: true, mode: mode || 'autopilot',
+        topic, auto_approve: true, mode: mode || 'copilot',
+        gate_stages: (mode === 'copilot') ? (gateStages || NP_KEY_GATES) : null,
         title: plan ? plan.title : null, plan: plan || null,
       });
       this._plan = null;

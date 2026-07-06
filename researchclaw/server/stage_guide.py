@@ -122,9 +122,11 @@ STAGE_GUIDE: list[dict] = [
         "phase": "Hypothesis",
         "what": (
             "Drawing on the gaps found in the synthesis, the system proposes specific, "
-            "testable hypotheses. It debates them from multiple perspectives and "
-            "checks each one for novelty, so the project ends up testing an idea "
-            "that is both new and actually answerable."
+            "testable hypotheses. Three AI agents debate them — the Innovator (pushes "
+            "for bold, novel ideas), the Pragmatist (pushes for what's actually "
+            "feasible to test), and the Contrarian (attacks weak assumptions) — and "
+            "each candidate is checked for novelty, so the project ends up testing an "
+            "idea that is both new and actually answerable."
         ),
         "reads": "The synthesis of the field and the original research questions.",
         "produces": "One or more candidate hypotheses, the arguments for and against each, and a novelty check.",
@@ -216,9 +218,9 @@ STAGE_GUIDE: list[dict] = [
         "phase": "Analysis",
         "what": (
             "The numbers from the experiments are interpreted: did they support the "
-            "hypothesis, and how confident can we be? The analysis is deliberately "
-            "argued from several perspectives, including a skeptical one, to guard "
-            "against wishful thinking."
+            "hypothesis, and how confident can we be? The same three agents — Innovator, "
+            "Pragmatist, and Contrarian — argue over what the results actually mean, with "
+            "the Contrarian pushing back hard, to guard against wishful thinking."
         ),
         "reads": "The final experiment results.",
         "produces": "A written analysis of what the results mean, examined from multiple viewpoints.",
@@ -279,9 +281,9 @@ STAGE_GUIDE: list[dict] = [
         "phase": "Writing",
         "what": (
             "The draft is critiqued the way journal reviewers would critique it: "
-            "independent reviewer personas hunt for weak arguments, missing evidence, "
-            "and unclear writing. Facing this criticism now means the final paper can "
-            "answer it in advance."
+            "independent AI reviewer agents (Reviewer A and Reviewer B) hunt for weak "
+            "arguments, missing evidence, and unclear writing. Facing this criticism now "
+            "means the final paper can answer it in advance."
         ),
         "reads": "The complete paper draft.",
         "produces": "A set of written reviews listing the draft's strengths, weaknesses, and required fixes.",

@@ -38,7 +38,13 @@ class PipelineStartRequest(BaseModel):
     auto_approve: bool = True
     title: str | None = None
     plan: dict[str, Any] | None = None
-    mode: str = "autopilot"  # "autopilot" | "copilot"
+    mode: str = "copilot"  # "autopilot" | "copilot" (co-pilot is the default)
+    gate_stages: list[int] | None = None  # stages to pause at in co-pilot; None -> key gates
+
+
+# The three canonical decision gates (literature screen, experiment design, quality gate).
+DEFAULT_GATE_STAGES = [5, 9, 20]
+ALL_STAGES = list(range(1, 24))
 
 
 class PipelineStartResponse(BaseModel):
@@ -89,9 +95,14 @@ async def _launch_run(
     preload_log: list | None = None,
     preload_files: dict | None = None,
     persist_start: bool = True,
-    copilot: bool = False,
+    gate_stages: list | None = None,
 ) -> None:
-    """Start (or resume) a pipeline run in the background. Caller holds _run_lock."""
+    """Start (or resume) a pipeline run in the background. Caller holds _run_lock.
+
+    gate_stages: list of stage numbers (1-23) to pause at for owner approval.
+    None/empty => autopilot (no pauses).
+    """
+    copilot = bool(gate_stages)
     global _active_run, _run_task
     import threading
 
@@ -163,10 +174,14 @@ async def _launch_run(
             adapters = AdapterBundle()
             if copilot:
                 try:
-                    from researchclaw.hitl.presets import get_preset
+                    from researchclaw.hitl.config import HITLConfig, StagePolicy
                     from researchclaw.hitl.session import HITLSession
 
-                    hitl_cfg = get_preset("gate-only")
+                    policies = {
+                        int(n): StagePolicy(require_approval=True, allow_edit_output=True)
+                        for n in gate_stages if 1 <= int(n) <= 23
+                    }
+                    hitl_cfg = HITLConfig(enabled=True, mode="custom", stage_policies=policies)
                     session = HITLSession(run_id=run_id, config=hitl_cfg, run_dir=run_dir)
                     adapters = AdapterBundle(hitl=session)
                 except Exception:
@@ -283,7 +298,7 @@ async def _drain_queue() -> None:
         await _launch_run(
             nxt["run_id"], config,
             owner_email=owner, title=nxt.get("title"), plan=nxt.get("plan"),
-            copilot=bool((nxt.get("plan") or {}).get("copilot")),
+            gate_stages=(nxt.get("plan") or {}).get("gate_stages"),
         )
 
 
@@ -369,9 +384,15 @@ async def start_pipeline(req: PipelineStartRequest, request: Request) -> Pipelin
 
     run_id = _new_run_id(config.research.topic)
     copilot = req.mode == "copilot"
+    # Resolve which stages to gate at: explicit list, else the key gates.
+    gate_stages: list[int] | None = None
+    if copilot:
+        picked = [int(n) for n in (req.gate_stages or []) if 1 <= int(n) <= 23]
+        gate_stages = sorted(set(picked)) if picked else list(DEFAULT_GATE_STAGES)
     # Persist co-pilot choice inside the plan so resume/redo/queue honor it.
     plan = dict(req.plan or {})
     plan["copilot"] = copilot
+    plan["gate_stages"] = gate_stages
 
     async with _run_lock:
         if _active_run and _active_run.get("status") == "running":
@@ -393,7 +414,7 @@ async def start_pipeline(req: PipelineStartRequest, request: Request) -> Pipelin
 
         await _launch_run(
             run_id, config,
-            owner_email=owner, title=req.title, plan=plan, copilot=copilot,
+            owner_email=owner, title=req.title, plan=plan, gate_stages=gate_stages,
         )
 
     return PipelineStartResponse(
@@ -613,7 +634,7 @@ async def _restore_and_launch(row: dict, from_stage_num: int | None, guidance: s
         from_stage=from_stage,
         preload_log=row.get("stage_log"), preload_files=run_files,
         persist_start=True,
-        copilot=bool(row.get("plan", {}) and (row["plan"] or {}).get("copilot")),
+        gate_stages=((row.get("plan") or {}).get("gate_stages")),
     )
 
 
