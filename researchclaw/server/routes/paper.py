@@ -33,13 +33,22 @@ Respond with ONLY a JSON object with these keys:
   left to the evidence
 - "approach": an array of 3-5 short bullet strings describing how the research
   will proceed (literature review, hypothesis, experiments, analysis, writing)
-- "research_type": an object classifying the methodology, with keys:
-    "paradigm": one of "Quantitative", "Qualitative", or "Mixed methods"
-    "design": the specific design in 2-4 words (e.g. "Controlled experiment",
-      "Computational/empirical study", "Comparative benchmark study",
-      "Observational/correlational study", "Simulation study")
-    "summary": one plain-English sentence a non-expert can understand,
-      saying what kind of research this is and why
+- "research_type": an object classifying the methodology precisely, with keys:
+    "hierarchy": an ordered array that drills from broad to specific, e.g.
+      ["Empirical research", "Quantitative", "Experimental",
+       "Controlled comparative benchmark"]. Go as deep as is accurate — pick
+      from (not limited to):
+        level 1: "Empirical research" or "Theoretical research"
+        level 2: "Quantitative", "Qualitative", or "Mixed methods"
+        level 3 (empirical quantitative): "Experimental", "Quasi-experimental",
+          "Observational", "Correlational", "Descriptive",
+          "Computational / simulation", or "Meta-analysis / systematic review"
+        level 4: the concrete design in a few words (e.g. "Randomized controlled
+          experiment", "Ablation study", "Benchmark comparison", "Cohort study")
+    "paradigm": one of "Quantitative", "Qualitative", "Mixed methods" (for a badge)
+    "design": the level-4 concrete design (short, for a badge)
+    "summary": one plain-English sentence a non-expert understands, saying what
+      kind of research this is and why it fits
 
 User's idea:
 {idea}"""

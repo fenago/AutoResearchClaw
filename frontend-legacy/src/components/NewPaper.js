@@ -128,8 +128,10 @@ const NewPaper = {
 
           ${p.research_type ? `<div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Type of research</div>
           <div style="font-size:14px;margin:2px 0 14px">
-            <span style="display:inline-block;padding:2px 10px;border-radius:999px;background:var(--glass-highlight);border:1px solid var(--glass-border);font-size:12.5px;font-weight:600;color:var(--accent)">${p.research_type.paradigm || ''}${p.research_type.design ? ' · ' + p.research_type.design : ''}</span>
-            <div style="color:var(--text-secondary);margin-top:5px">${p.research_type.summary || ''}</div>
+            ${(p.research_type.hierarchy && p.research_type.hierarchy.length) ? `<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:6px">
+              ${p.research_type.hierarchy.map((h, i) => `<span style="padding:2px 10px;border-radius:999px;background:var(--glass-highlight);border:1px solid var(--glass-border);font-size:12px;${i === p.research_type.hierarchy.length - 1 ? 'font-weight:600;color:var(--accent)' : 'color:var(--text-secondary)'}">${h}</span>${i < p.research_type.hierarchy.length - 1 ? '<span style="opacity:.5">→</span>' : ''}`).join('')}
+            </div>` : ''}
+            <div style="color:var(--text-secondary)">${p.research_type.summary || ''}</div>
           </div>` : ''}
 
           <div style="font-size:12px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">What the paper will find out</div>

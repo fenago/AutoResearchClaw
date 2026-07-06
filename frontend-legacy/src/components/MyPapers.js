@@ -1,3 +1,40 @@
+const E5O_AGENTS = {
+  atlas:      { name: 'Atlas', emoji: '🧭', color: '#22d3ee', role: 'Research Director' },
+  scout:      { name: 'Scout', emoji: '🔭', color: '#38bdf8', role: 'Literature Scout' },
+  sage:       { name: 'Sage', emoji: '🧩', color: '#2dd4bf', role: 'Synthesis Analyst' },
+  innovator:  { name: 'The Innovator', emoji: '💡', color: '#a78bfa', role: 'pushes bold, novel ideas' },
+  pragmatist: { name: 'The Pragmatist', emoji: '⚖️', color: '#fbbf24', role: 'keeps it feasible' },
+  contrarian: { name: 'The Contrarian', emoji: '🔥', color: '#f87171', role: 'attacks weak assumptions' },
+  forge:      { name: 'Forge', emoji: '🛠️', color: '#fb923c', role: 'Experiment Engineer' },
+  quill:      { name: 'Quill', emoji: '✍️', color: '#4ade80', role: 'Science Writer' },
+  reviewer_a: { name: 'Reviewer A', emoji: '📘', color: '#818cf8', role: 'Peer Reviewer' },
+  reviewer_b: { name: 'Reviewer B', emoji: '📙', color: '#c084fc', role: 'Peer Reviewer' },
+  warden:     { name: 'Warden', emoji: '🛡️', color: '#94a3b8', role: 'Integrity Auditor' },
+};
+const E5O_DEBATE = ['innovator', 'pragmatist', 'contrarian'];
+const E5O_STAGE_AGENTS = {
+  TOPIC_INIT: { lead: 'atlas' }, PROBLEM_DECOMPOSE: { lead: 'atlas' },
+  SEARCH_STRATEGY: { lead: 'scout' }, LITERATURE_COLLECT: { lead: 'scout' },
+  LITERATURE_SCREEN: { lead: 'scout' }, KNOWLEDGE_EXTRACT: { lead: 'scout' },
+  SYNTHESIS: { lead: 'sage' },
+  HYPOTHESIS_GEN: { lead: 'innovator', agents: E5O_DEBATE, debate: true },
+  EXPERIMENT_DESIGN: { lead: 'forge' }, CODE_GENERATION: { lead: 'forge' },
+  RESOURCE_PLANNING: { lead: 'forge' }, EXPERIMENT_RUN: { lead: 'forge' },
+  ITERATIVE_REFINE: { lead: 'forge' },
+  RESULT_ANALYSIS: { lead: 'innovator', agents: E5O_DEBATE, debate: true },
+  RESEARCH_DECISION: { lead: 'atlas' }, PAPER_OUTLINE: { lead: 'quill' },
+  PAPER_DRAFT: { lead: 'quill' },
+  PEER_REVIEW: { lead: 'reviewer_a', agents: ['reviewer_a', 'reviewer_b'], debate: true },
+  PAPER_REVISION: { lead: 'quill' }, QUALITY_GATE: { lead: 'warden' },
+  KNOWLEDGE_ARCHIVE: { lead: 'warden' }, EXPORT_PUBLISH: { lead: 'warden' },
+  CITATION_VERIFY: { lead: 'warden' },
+};
+function e5oStageAgents(key) {
+  const spec = E5O_STAGE_AGENTS[key] || { lead: 'atlas' };
+  const ids = spec.agents || [spec.lead];
+  return { debate: !!spec.debate, agents: ids.map(i => E5O_AGENTS[i]).filter(Boolean) };
+}
+
 const E5O_STAGES = [
   ['TOPIC_INIT', 'Understanding your idea', 'Scoping'],
   ['PROBLEM_DECOMPOSE', 'Breaking it into research questions', 'Scoping'],
@@ -174,7 +211,10 @@ const MyPapers = {
               <h2 style="font-size:20px;line-height:1.3">${p.title || p.topic || 'Untitled paper'}</h2>
               <p style="font-size:13px;color:var(--text-muted);margin-top:6px">${p.topic || ''}</p>
               ${p.plan && p.plan.hypothesis ? `<p style="font-size:13px;color:var(--text-secondary);margin-top:8px;font-style:italic">Hypothesis under test: ${p.plan.hypothesis}</p>` : ''}
-              ${p.plan && p.plan.research_type ? `<p style="font-size:12.5px;color:var(--text-muted);margin-top:6px">📐 ${p.plan.research_type.paradigm || ''}${p.plan.research_type.design ? ' · ' + p.plan.research_type.design : ''}${p.plan.research_type.summary ? ' — ' + p.plan.research_type.summary : ''}</p>` : ''}
+              ${p.plan && p.plan.research_type ? `<div style="font-size:12.5px;color:var(--text-muted);margin-top:8px">
+                📐 ${(p.plan.research_type.hierarchy && p.plan.research_type.hierarchy.length) ? p.plan.research_type.hierarchy.join(' → ') : (p.plan.research_type.paradigm || '')}
+                ${p.plan.research_type.summary ? `<div style="margin-top:3px">${p.plan.research_type.summary}</div>` : ''}
+              </div>` : ''}
             </div>
             ${this._statusPill(p.status)}
           </div>
@@ -295,15 +335,15 @@ const MyPapers = {
       const cur = stages.find(x => x.key === snap.current);
       if (work && cur) {
         this._stageStarted = snap.stage_started ? snap.stage_started * 1000 : this._stageStarted;
+        const ag = (snap.current_agents && snap.current_agents.agents && snap.current_agents.agents.length)
+          ? snap.current_agents : e5oStageAgents(snap.current);
         work.innerHTML = `
-          <div style="display:flex;gap:12px;align-items:flex-start;padding:14px;border:1px solid var(--glass-border);border-radius:12px;background:linear-gradient(90deg, rgba(88,166,255,0.07), transparent)">
-            <div class="dot-throb"></div>
-            <div style="flex:1">
+          <div style="padding:14px;border:1px solid var(--glass-border);border-radius:12px;background:linear-gradient(90deg, rgba(88,166,255,0.07), transparent)">
+            ${this._agentHeader(ag)}
+            <div style="margin-top:10px">
               <div style="font-size:14px;font-weight:600;color:var(--accent)">${cur.label}<span class="ellipsis"></span></div>
               <div style="font-size:12.5px;color:var(--text-secondary);margin-top:3px">${snap.doing || ''}</div>
-              <div style="font-size:11.5px;color:var(--text-muted);margin-top:6px">
-                <span id="stage-elapsed"></span>
-              </div>
+              <div style="font-size:11.5px;color:var(--text-muted);margin-top:6px"><span id="stage-elapsed"></span></div>
               ${(snap.activity || []).length ? `
               <div style="margin-top:8px;display:flex;flex-direction:column;gap:2px">
                 ${snap.activity.slice(0, 4).map(a => `
@@ -325,11 +365,14 @@ const MyPapers = {
     let html = '', phase = '';
     stages.forEach((s, i) => {
       if (s.phase !== phase) { phase = s.phase; html += `<div class="stage-phase">${phase}</div>`; }
+      const sa = e5oStageAgents(s.key);
+      const lead = sa.agents[0];
       html += `
         <div class="stage-item ${s.state}" data-stage="${i + 1}" style="cursor:pointer" title="Click to see what happened here">
           <div class="dot">${s.state === 'done' ? '✓' : ''}</div>
           <div style="flex:1">
             <div class="stage-label">${i + 1}. ${s.label} <span style="opacity:.5;font-size:11px">›</span></div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:1px">${lead ? lead.emoji + ' ' + lead.name : ''}${sa.debate ? ' + debate team' : ''}</div>
             ${summaries[s.key] ? `<div class="stage-summary">${summaries[s.key]}</div>` : ''}
           </div>
           ${canRedo && s.state === 'done' ? `<button class="stage-redo" data-redo="${i + 1}" title="Redo from this step" style="background:none;border:1px solid var(--glass-border);border-radius:6px;color:var(--text-muted);cursor:pointer;font-size:11px;padding:2px 7px;align-self:center">↻</button>` : ''}
@@ -377,6 +420,36 @@ const MyPapers = {
     document.getElementById('gate-approve').addEventListener('click', () => this._gate('approve', ''));
     document.getElementById('gate-adjust').addEventListener('click', () => this._gate('adjust', g()));
     document.getElementById('gate-reject').addEventListener('click', () => this._gate('reject', g()));
+  },
+
+  _agentAvatar(a, cls) {
+    return `<div class="agent-av ${cls || ''}" title="${a.name} — ${a.role}" style="--agc:${a.color}">
+      <span class="agent-av-emoji">${a.emoji}</span>
+    </div>`;
+  },
+
+  _agentHeader(ag) {
+    if (!ag || !ag.agents || !ag.agents.length) return '';
+    if (ag.debate && ag.agents.length > 1) {
+      const names = ag.agents.map(a => `<span style="color:${a.color};font-weight:600">${a.name}</span>`);
+      const nameStr = names.length === 2 ? names.join(' &amp; ') : names.slice(0, -1).join(', ') + ' &amp; ' + names.slice(-1);
+      return `
+        <div class="agent-debate">
+          <div class="agent-debate-row">
+            ${ag.agents.map((a, i) => this._agentAvatar(a, 'talking d' + i)).join('<span class="agent-vs">⚡</span>')}
+          </div>
+          <div style="font-size:12.5px;margin-top:6px">${nameStr} are <strong>debating this</strong> 🗣️</div>
+        </div>`;
+    }
+    const a = ag.agents[0];
+    return `
+      <div style="display:flex;align-items:center;gap:12px">
+        ${this._agentAvatar(a, 'talking')}
+        <div>
+          <div style="font-size:14px;font-weight:600"><span style="color:${a.color}">${a.name}</span> is on it</div>
+          <div style="font-size:12px;color:var(--text-muted)">${a.role}</div>
+        </div>
+      </div>`;
   },
 
   _startTicker() {

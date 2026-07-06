@@ -547,3 +547,29 @@ body {
 .stage-item:hover { background: var(--glass-highlight); }
 .stage-redo:hover { color: var(--accent); border-color: var(--accent); }
 .mode-opt:has(input:checked) { border-color: var(--accent); background: linear-gradient(90deg, rgba(88,166,255,0.08), transparent); }
+
+/* ── Live agent avatars & debate animation ── */
+.agent-av {
+  width: 42px; height: 42px; border-radius: 50%; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--agc) 18%, transparent);
+  border: 2px solid var(--agc);
+  box-shadow: 0 0 0 0 var(--agc);
+}
+.agent-av-emoji { font-size: 20px; line-height: 1; }
+.agent-av.talking { animation: agent-pulse 1.6s ease infinite; }
+@keyframes agent-pulse {
+  0%,100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--agc) 55%, transparent); transform: translateY(0); }
+  50% { box-shadow: 0 0 0 8px color-mix(in srgb, var(--agc) 0%, transparent); transform: translateY(-2px); }
+}
+.agent-debate-row { display: flex; align-items: center; gap: 10px; }
+.agent-vs { font-size: 14px; opacity: .6; animation: vs-flash 1.2s steps(2) infinite; }
+@keyframes vs-flash { 0%,100% { opacity: .25; } 50% { opacity: .9; } }
+.agent-av.d0 { animation-delay: 0s; }
+.agent-av.d1 { animation-delay: .5s; }
+.agent-av.d2 { animation-delay: 1s; }
+.agent-debate { padding: 2px 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-av.talking, .agent-vs { animation: none; }
+}

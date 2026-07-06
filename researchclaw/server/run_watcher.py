@@ -72,6 +72,62 @@ STAGES: list[dict[str, str]] = [
 _STAGE_INDEX = {s["key"]: i for i, s in enumerate(STAGES)}
 _MAX_SUMMARY_INPUT = 8_000
 
+# ── The research team: named AI agents behind the pipeline ──────────────
+# Some (the debate trio, the reviewers) are real multi-agent debates in the
+# engine; the rest are the primary assistant playing a named specialist role.
+AGENTS: dict[str, dict[str, str]] = {
+    "atlas":      {"name": "Atlas",        "emoji": "🧭", "color": "#22d3ee", "role": "Research Director"},
+    "scout":      {"name": "Scout",        "emoji": "🔭", "color": "#38bdf8", "role": "Literature Scout"},
+    "sage":       {"name": "Sage",         "emoji": "🧩", "color": "#2dd4bf", "role": "Synthesis Analyst"},
+    "innovator":  {"name": "The Innovator","emoji": "💡", "color": "#a78bfa", "role": "pushes bold, novel ideas"},
+    "pragmatist": {"name": "The Pragmatist","emoji": "⚖️","color": "#fbbf24", "role": "keeps it feasible and grounded"},
+    "contrarian": {"name": "The Contrarian","emoji": "🔥","color": "#f87171", "role": "attacks weak assumptions"},
+    "forge":      {"name": "Forge",        "emoji": "🛠️", "color": "#fb923c", "role": "Experiment Engineer"},
+    "quill":      {"name": "Quill",        "emoji": "✍️", "color": "#4ade80", "role": "Science Writer"},
+    "reviewer_a": {"name": "Reviewer A",   "emoji": "📘", "color": "#818cf8", "role": "Peer Reviewer"},
+    "reviewer_b": {"name": "Reviewer B",   "emoji": "📙", "color": "#c084fc", "role": "Peer Reviewer"},
+    "warden":     {"name": "Warden",       "emoji": "🛡️", "color": "#94a3b8", "role": "Integrity Auditor"},
+}
+
+_DEBATE = ["innovator", "pragmatist", "contrarian"]
+STAGE_AGENTS: dict[str, dict[str, Any]] = {
+    "TOPIC_INIT":        {"lead": "atlas"},
+    "PROBLEM_DECOMPOSE": {"lead": "atlas"},
+    "SEARCH_STRATEGY":   {"lead": "scout"},
+    "LITERATURE_COLLECT":{"lead": "scout"},
+    "LITERATURE_SCREEN": {"lead": "scout"},
+    "KNOWLEDGE_EXTRACT": {"lead": "scout"},
+    "SYNTHESIS":         {"lead": "sage"},
+    "HYPOTHESIS_GEN":    {"lead": "innovator", "agents": _DEBATE, "debate": True},
+    "EXPERIMENT_DESIGN": {"lead": "forge"},
+    "CODE_GENERATION":   {"lead": "forge"},
+    "RESOURCE_PLANNING": {"lead": "forge"},
+    "EXPERIMENT_RUN":    {"lead": "forge"},
+    "ITERATIVE_REFINE":  {"lead": "forge"},
+    "RESULT_ANALYSIS":   {"lead": "innovator", "agents": _DEBATE, "debate": True},
+    "RESEARCH_DECISION": {"lead": "atlas"},
+    "PAPER_OUTLINE":     {"lead": "quill"},
+    "PAPER_DRAFT":       {"lead": "quill"},
+    "PEER_REVIEW":       {"lead": "reviewer_a", "agents": ["reviewer_a", "reviewer_b"], "debate": True},
+    "PAPER_REVISION":    {"lead": "quill"},
+    "QUALITY_GATE":      {"lead": "warden"},
+    "KNOWLEDGE_ARCHIVE": {"lead": "warden"},
+    "EXPORT_PUBLISH":    {"lead": "warden"},
+    "CITATION_VERIFY":   {"lead": "warden"},
+}
+
+
+def _stage_agents(stage_key: str | None) -> dict[str, Any]:
+    """Resolve the agent(s) active for a stage, hydrated with identities."""
+    spec = STAGE_AGENTS.get(stage_key or "", {"lead": "atlas"})
+    ids = spec.get("agents") or [spec.get("lead", "atlas")]
+    return {
+        "lead": AGENTS.get(spec.get("lead", "atlas")),
+        "debate": bool(spec.get("debate")),
+        "agents": [AGENTS[a] for a in ids if a in AGENTS],
+    }
+
+
 _SUMMARY_PROMPT = (
     "You are narrating an autonomous research run to the paper's owner (a smart "
     "non-technical person). A pipeline stage named '{label}' just finished. Below "
@@ -144,7 +200,8 @@ class RunWatcher:
             if s["key"] == current and current not in seen:
                 state = "active"
             entry = next((e for e in self.stage_log if e["key"] == s["key"]), None)
-            stages.append({**s, "state": state, "summary": (entry or {}).get("summary")})
+            stages.append({**s, "state": state, "summary": (entry or {}).get("summary"),
+                           "agents": _stage_agents(s["key"])})
 
         # Live activity inside the current stage: recent files + elapsed time
         activity: list[dict[str, Any]] = []
@@ -169,6 +226,7 @@ class RunWatcher:
         return {
             "stages": stages,
             "current": current,
+            "current_agents": _stage_agents(current),
             "doing": DOING.get(current or "", ""),
             "log": self.stage_log,
             "done": done,
