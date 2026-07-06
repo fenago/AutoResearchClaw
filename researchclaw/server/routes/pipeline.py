@@ -47,6 +47,18 @@ DEFAULT_GATE_STAGES = [5, 9, 20]
 ALL_STAGES = list(range(1, 24))
 
 
+def _plan_gate_stages(plan: dict | None) -> list | None:
+    """Resolve gate stages from a stored plan, defaulting to the key gates when
+    the plan is co-pilot but predates the gate_stages field."""
+    plan = plan or {}
+    gs = plan.get("gate_stages")
+    if gs:
+        return gs
+    if plan.get("copilot"):
+        return list(DEFAULT_GATE_STAGES)
+    return None
+
+
 class PipelineStartResponse(BaseModel):
     """Response after starting a pipeline."""
 
@@ -298,7 +310,7 @@ async def _drain_queue() -> None:
         await _launch_run(
             nxt["run_id"], config,
             owner_email=owner, title=nxt.get("title"), plan=nxt.get("plan"),
-            gate_stages=(nxt.get("plan") or {}).get("gate_stages"),
+            gate_stages=_plan_gate_stages(nxt.get("plan")),
         )
 
 
@@ -634,7 +646,7 @@ async def _restore_and_launch(row: dict, from_stage_num: int | None, guidance: s
         from_stage=from_stage,
         preload_log=row.get("stage_log"), preload_files=run_files,
         persist_start=True,
-        gate_stages=((row.get("plan") or {}).get("gate_stages")),
+        gate_stages=_plan_gate_stages(row.get("plan")),
     )
 
 
