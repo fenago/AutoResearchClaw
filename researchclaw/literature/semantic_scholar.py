@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import random
 import threading
 import time
@@ -35,6 +36,17 @@ _BASE_URL = "https://api.semanticscholar.org/graph/v1/paper/search"
 _FIELDS = "paperId,title,abstract,year,venue,citationCount,authors,externalIds,url"
 _MAX_PER_REQUEST = 100
 _RATE_LIMIT_SEC = 1.5  # conservative spacing between requests
+
+
+def _min_interval() -> float:
+    """Minimum seconds between S2 requests. The issued key allows 1 req/sec
+    CUMULATIVE across all endpoints, so we stay safely under that regardless
+    of whether a key is set. Never faster than ~1/sec even if misconfigured."""
+    try:
+        v = float(os.environ.get("S2_MIN_INTERVAL_SEC", "1.2"))
+    except ValueError:
+        v = 1.2
+    return max(1.1, v)
 _MAX_RETRIES = 3
 _MAX_WAIT_SEC = 60
 _TIMEOUT_SEC = 30
@@ -175,7 +187,7 @@ def search_semantic_scholar(
     # Rate limiting: locked to serialize concurrent callers
     with _rate_lock:
         now = time.monotonic()
-        rate_limit = 0.3 if api_key else _RATE_LIMIT_SEC
+        rate_limit = _min_interval()
         elapsed_since_last = now - _last_request_time
         if elapsed_since_last < rate_limit:
             time.sleep(rate_limit - elapsed_since_last)
@@ -286,7 +298,7 @@ def batch_fetch_papers(
         return []
 
     global _last_request_time  # noqa: PLW0603
-    rate = 0.3 if api_key else _RATE_LIMIT_SEC
+    rate = _min_interval()
     with _rate_lock:
         now = time.monotonic()
         elapsed = now - _last_request_time
