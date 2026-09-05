@@ -13,6 +13,7 @@ from researchclaw.llm.client import (
     LLMClient,
     LLMConfig,
     LLMResponse,
+    _MAX_BACKOFF_SEC,
     _NEW_PARAM_MODELS,
     _NO_TEMPERATURE_MODELS,
 )
@@ -525,3 +526,211 @@ def test_chat_uses_fallback_after_first_model_error(monkeypatch: pytest.MonkeyPa
     response = client.chat([{"role": "user", "content": "x"}])
     assert calls == ["gpt-5.2", "gpt-5.1"]
     assert response.model == "gpt-5.1"
+
+
+def _retry_client(*, max_retries: int, retry_base_delay: float = 1.0) -> LLMClient:
+    return LLMClient(
+        LLMConfig(
+            base_url="https://api.example.com/v1",
+            api_key="test-key",
+            primary_model="gpt-test",
+            fallback_models=[],
+            max_retries=max_retries,
+            retry_base_delay=retry_base_delay,
+        )
+    )
+
+
+def _record_sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    delays: list[float] = []
+    monkeypatch.setattr(
+        "researchclaw.llm.client.time.sleep", lambda d: delays.append(d)
+    )
+    return delays
+
+
+def _http_error(status: int) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError("url", status, "err", HTTPMessage(), None)
+
+
+def test_retry_reraises_original_http_error_when_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Exhausted retries must surface the HTTPError, not mask it.
+
+    preflight() classifies failures via RuntimeError.__cause__, so the
+    original error has to survive the retry loop.
+    """
+    _record_sleeps(monkeypatch)
+    client = _retry_client(max_retries=3)
+    monkeypatch.setattr(
+        LLMClient,
+        "_raw_call",
+        lambda *a, **k: (_ for _ in ()).throw(_http_error(429)),
+    )
+
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        client._call_with_retry("gpt-test", [], 10, 0.0, False)
+    assert exc_info.value.code == 429
+
+
+def test_preflight_reports_rate_limit_through_retry_path(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A persistent 429 should still be reported as a rate limit."""
+    _record_sleeps(monkeypatch)
+    client = _retry_client(max_retries=3)
+    monkeypatch.setattr(
+        LLMClient,
+        "_raw_call",
+        lambda *a, **k: (_ for _ in ()).throw(_http_error(429)),
+    )
+
+    ok, msg = client.preflight()
+    assert ok is False
+    assert "Rate limited" in msg
+
+
+def test_retry_does_not_sleep_after_final_attempt(monkeypatch: pytest.MonkeyPatch):
+    """N attempts means N-1 backoff sleeps; the last one is pure waste."""
+    delays = _record_sleeps(monkeypatch)
+    client = _retry_client(max_retries=3)
+    monkeypatch.setattr(
+        LLMClient,
+        "_raw_call",
+        lambda *a, **k: (_ for _ in ()).throw(_http_error(503)),
+    )
+
+    with pytest.raises(urllib.error.HTTPError):
+        client._call_with_retry("gpt-test", [], 10, 0.0, False)
+    assert len(delays) == 2
+
+
+def test_retry_backoff_is_capped_for_os_errors(monkeypatch: pytest.MonkeyPatch):
+    """Connection errors must honour the same 300s ceiling as HTTP errors."""
+    delays = _record_sleeps(monkeypatch)
+    client = _retry_client(max_retries=12)
+    monkeypatch.setattr(
+        LLMClient,
+        "_raw_call",
+        lambda *a, **k: (_ for _ in ()).throw(ConnectionResetError("boom")),
+    )
+
+    with pytest.raises(ConnectionResetError):
+        client._call_with_retry("gpt-test", [], 10, 0.0, False)
+    assert delays, "expected retry sleeps"
+    assert max(delays) <= _MAX_BACKOFF_SEC
+
+
+def test_retry_reraises_original_url_error_when_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _record_sleeps(monkeypatch)
+    client = _retry_client(max_retries=2)
+    monkeypatch.setattr(
+        LLMClient,
+        "_raw_call",
+        lambda *a, **k: (_ for _ in ()).throw(urllib.error.URLError("no route")),
+    )
+
+    with pytest.raises(urllib.error.URLError):
+        client._call_with_retry("gpt-test", [], 10, 0.0, False)
+
+
+class TestThinkingLeakIssue312:
+    """Reasoning traces must not reach artifacts by default (issue #312).
+
+    Reported against ``acp: opencode``: ``[thinking]`` blocks were landing in
+    paper text. The stripper was never the problem — it was correct but opt-in,
+    and the stages that write papers, code and synthesis call ``chat()``
+    directly without asking for it, so it never ran on their output.
+    """
+
+    RAW = (
+        "[thinking] Let me structure this. Chronological, or thematic?\n"
+        "Thematic reads better here.\n"
+        "## Related Work\n\n"
+        "Prior work falls into two camps.\n"
+    )
+
+    def test_acp_chat_strips_thinking_by_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from researchclaw.llm.acp_client import ACPClient, ACPConfig
+
+        client = ACPClient(ACPConfig(agent="opencode"))
+        monkeypatch.setattr(ACPClient, "_send_prompt", lambda _s, _p: self.RAW)
+
+        content = client.chat([{"role": "user", "content": "write"}]).content
+        assert "[thinking]" not in content
+        assert "Prior work falls into two camps." in content
+
+    def test_acp_chat_can_still_opt_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from researchclaw.llm.acp_client import ACPClient, ACPConfig
+
+        client = ACPClient(ACPConfig(agent="opencode"))
+        monkeypatch.setattr(ACPClient, "_send_prompt", lambda _s, _p: self.RAW)
+
+        content = client.chat(
+            [{"role": "user", "content": "write"}], strip_thinking=False
+        ).content
+        assert "[thinking]" in content
+
+    def test_http_chat_strips_think_tags_by_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = LLMClient(
+            LLMConfig(
+                base_url="https://api.example.com/v1",
+                api_key="k",
+                primary_model="m",
+                fallback_models=[],
+            )
+        )
+        monkeypatch.setattr(
+            LLMClient,
+            "_call_with_retry",
+            lambda *a, **k: LLMResponse(
+                content="<think>hmm</think>The answer is 4.", model="m"
+            ),
+        )
+        content = client.chat([{"role": "user", "content": "2+2"}]).content
+        assert "<think>" not in content
+        assert "The answer is 4." in content
+
+
+class TestStripThinkingIsLosslessOnCleanText:
+    """Stripping must be a no-op on text that carries no reasoning markers.
+
+    This is what makes the default in TestThinkingLeakIssue312 safe to turn on
+    for every call: the blank-line collapse used to run unconditionally and
+    rewrote PEP 8's two-blank-line separator in generated Python down to one.
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param(
+                "import numpy as np\n\n\ndef main():\n    return 1\n",
+                id="pep8-two-blank-lines",
+            ),
+            pytest.param("## Intro\n\nWe propose X [1].\n", id="markdown"),
+            pytest.param('{"a": 1, "b": [2, 3]}', id="json"),
+            pytest.param("queries:\n  - a\n  - b\n", id="yaml"),
+            pytest.param(
+                "See [tool](https://x.example) for details.", id="markdown-link"
+            ),
+        ],
+    )
+    def test_clean_text_is_returned_byte_for_byte(self, text: str) -> None:
+        from researchclaw.utils.thinking_tags import strip_thinking_tags
+
+        assert strip_thinking_tags(text) == text
+
+    def test_stripping_still_cleans_up_when_it_fires(self) -> None:
+        from researchclaw.utils.thinking_tags import strip_thinking_tags
+
+        out = strip_thinking_tags("<think>a</think>\n\n\n\nBody text.\n")
+        assert out == "Body text."

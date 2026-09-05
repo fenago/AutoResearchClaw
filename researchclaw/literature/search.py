@@ -115,6 +115,8 @@ def search_papers(
     year_min: int = 0,
     deduplicate: bool = True,
     s2_api_key: str = "",
+    openalex_email: str = "",
+    openalex_api_key: str = "",
 ) -> list[Paper]:
     """Search multiple academic sources and return deduplicated results.
 
@@ -132,6 +134,10 @@ def search_papers(
         Whether to remove duplicates across sources.
     s2_api_key:
         Optional Semantic Scholar API key.
+    openalex_email:
+        Optional OpenAlex mailto value.
+    openalex_api_key:
+        Optional OpenAlex API key.
 
     Returns
     -------
@@ -158,10 +164,17 @@ def search_papers(
         )
         try:
             if src_lower == "openalex":
+                openalex_kwargs: dict[str, object] = {
+                    "limit": limit,
+                    "year_min": year_min,
+                }
+                if openalex_email:
+                    openalex_kwargs["email"] = openalex_email
+                if openalex_api_key:
+                    openalex_kwargs["api_key"] = openalex_api_key
                 papers = search_openalex(
                     query,
-                    limit=limit,
-                    year_min=year_min,
+                    **openalex_kwargs,
                 )
                 all_papers.extend(papers)
                 cache_put(query, "openalex", limit, _papers_to_dicts(papers))
@@ -256,6 +269,8 @@ def search_papers_multi_query(
     sources: Sequence[str] = _DEFAULT_SOURCES,
     year_min: int = 0,
     s2_api_key: str = "",
+    openalex_email: str = "",
+    openalex_api_key: str = "",
     inter_query_delay: float = 1.5,
 ) -> list[Paper]:
     """Run multiple queries and return deduplicated union.
@@ -273,6 +288,8 @@ def search_papers_multi_query(
             sources=sources,
             year_min=year_min,
             s2_api_key=s2_api_key,
+            openalex_email=openalex_email,
+            openalex_api_key=openalex_api_key,
             deduplicate=False,  # we dedup globally below
         )
         all_papers.extend(results)

@@ -60,7 +60,7 @@ _SKIP_PATTERNS = [
     re.compile(r"\\bibliography\{[^}]*\}"),
     re.compile(r"\\usepackage(?:\[[^\]]*\])?\{[^}]*\}"),
     re.compile(r"\\documentclass(?:\[[^\]]*\])?\{[^}]*\}"),
-    re.compile(r"% .*$", re.MULTILINE),  # Comments
+    re.compile(r"(?<!\\)%.*$", re.MULTILINE),  # Comments (but not escaped \%)
     re.compile(r"\\begin\{verbatim\}.*?\\end\{verbatim\}", re.DOTALL),
     re.compile(r"\\begin\{lstlisting\}.*?\\end\{lstlisting\}", re.DOTALL),
     re.compile(r"\\begin\{equation\*?\}.*?\\end\{equation\*?\}", re.DOTALL),

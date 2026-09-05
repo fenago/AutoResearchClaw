@@ -125,8 +125,17 @@ _ENTRY_RE = re.compile(
     re.DOTALL,
 )
 
+# Matches all three legal BibTeX field-value syntaxes:
+#   field = {…}        (brace-delimited, incl. two levels of nesting)
+#   field = "…"        (quote-delimited)
+#   field = 2024       (bare number, e.g. year/volume)
 _FIELD_RE = re.compile(
-    r"(\w+)\s*=\s*\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\}",
+    r"(\w+)\s*=\s*"
+    r"(?:"
+    r"\{((?:[^{}]|\{(?:[^{}]|\{[^{}]*\})*\})*)\}"  # group 2: {…}
+    r'|"([^"]*)"'  # group 3: "…"
+    r"|([^,{}\s][^,{}]*?)"  # group 4: bare value
+    r")\s*(?:,|$)",
     re.DOTALL,
 )
 
@@ -136,6 +145,10 @@ def parse_bibtex_entries(bib_text: str) -> list[dict[str, str]]:
 
     Each dict contains at least ``key`` and ``type``, plus any parsed fields
     (``title``, ``author``, ``year``, ``doi``, ``eprint``, ``url``, …).
+
+    Accepts brace-, quote-, and bare-number-delimited field values so that a
+    fabricated entry cannot slip through unverified by using ``title = "…"``
+    instead of ``title = {…}``.
     """
     entries: list[dict[str, str]] = []
     for m in _ENTRY_RE.finditer(bib_text):
@@ -145,7 +158,12 @@ def parse_bibtex_entries(bib_text: str) -> list[dict[str, str]]:
         }
         body = m.group(3)
         for fm in _FIELD_RE.finditer(body):
-            entry[fm.group(1).lower()] = fm.group(2).strip()
+            value = fm.group(2)
+            if value is None:
+                value = fm.group(3)
+            if value is None:
+                value = fm.group(4)
+            entry[fm.group(1).lower()] = (value or "").strip()
         entries.append(entry)
     return entries
 

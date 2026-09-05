@@ -835,9 +835,20 @@ def auto_fix_unbound_locals(code: str) -> tuple[str, int]:
                 for var_name, var_line in before.items():
                     if_only_vars[var_name] = var_line
                     if_line_map[var_name] = child.lineno
-            elif isinstance(child, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
-                for target in _extract_assign_targets(child):
-                    top_level_vars.add(target)
+            else:
+                # Any binding that is NOT exclusively inside a top-level
+                # if-statement means the variable is not "if-only" and must
+                # not be pre-seeded with ``= None`` (doing so would clobber a
+                # value assigned in a for/while/with/try body). Collect every
+                # Store-context name and except-handler binding from these
+                # non-if children so such variables are excluded below.
+                for sub in ast.walk(child):
+                    if isinstance(sub, ast.Name) and isinstance(
+                        sub.ctx, ast.Store
+                    ):
+                        top_level_vars.add(sub.id)
+                    elif isinstance(sub, ast.ExceptHandler) and sub.name:
+                        top_level_vars.add(sub.name)
 
         for var_name, var_line in if_only_vars.items():
             if var_name in top_level_vars:

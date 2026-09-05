@@ -114,6 +114,33 @@ class TestParseBibtexEntries:
     def test_malformed_bib(self) -> None:
         assert parse_bibtex_entries("not bibtex at all") == []
 
+    def test_quote_delimited_title_is_parsed(self) -> None:
+        # Regression: quote-delimited fields must be parsed, otherwise a
+        # fabricated entry using `title = "..."` slips through verification
+        # (parsed with no title -> marked SKIPPED -> retained).
+        bib = (
+            '@article{fake2024quantum,\n'
+            '  title = "A Completely Fabricated Quantum Paper",\n'
+            '  author = "Nobody Real",\n'
+            '  year = {2024},\n'
+            '}'
+        )
+        entry = parse_bibtex_entries(bib)[0]
+        assert entry["title"] == "A Completely Fabricated Quantum Paper"
+        assert entry["author"] == "Nobody Real"
+        assert entry["year"] == "2024"
+
+    def test_bare_numeric_field_is_parsed(self) -> None:
+        bib = "@article{k,\n title = {X},\n year = 2021,\n volume = 12,\n}"
+        entry = parse_bibtex_entries(bib)[0]
+        assert entry["year"] == "2021"
+        assert entry["volume"] == "12"
+
+    def test_nested_braces_still_parse(self) -> None:
+        bib = "@article{n,\n title = {A {Nested} Title},\n year = {2022},\n}"
+        entry = parse_bibtex_entries(bib)[0]
+        assert entry["title"] == "A {Nested} Title"
+
 
 class TestTitleSimilarity:
     def test_identical(self) -> None:

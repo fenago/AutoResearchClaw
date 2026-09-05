@@ -269,6 +269,14 @@ _KEYWORD_RULES: list[tuple[list[str], str]] = [
       "neural dynamics", "population coding", "neural decoding",
       "raster plot", "firing rate", "synaptic", "connectome"],
      "neuroscience_computational"),
+    # Clinical sleep / perioperative monitoring. Keep these terms specific so
+    # general EEG/fMRI neuroscience topics still route to neuroscience_imaging.
+    (["polysomnography", "sleep apnea", "sleep staging", "sleep stage",
+      "apnea-hypopnea", "apnea hypopnea", "ahi score", "hsat",
+      "obstructive sleep apnea", "respiratory depression",
+      "sedation monitoring", "perioperative respiratory",
+      "airway management", "anesthesia monitoring"],
+     "clinical_sleep"),
     (["fmri", "eeg", "meg", "neuroimaging", "brain imaging",
       "nilearn", "mne-python", "bold signal", "brain network",
       "functional connectivity"], "neuroscience_imaging"),
@@ -334,6 +342,21 @@ _KEYWORD_RULES: list[tuple[list[str], str]] = [
     (["protein", "alphafold", "protein folding", "amino acid",
       "esm"], "biology_protein"),
     (["biology", "bioinformatics", "omics"], "biology_general"),
+
+    # Medical observational research (before economics so "logistic regression"
+    # in a retrospective cohort does not route to economics_empirical).
+    # NOTE: generic terms "cross-sectional"/"cross sectional"/"table 1" were
+    # intentionally removed — they are common in econometrics/statistics and
+    # were hijacking non-medical topics (e.g. wage-inequality regressions)
+    # into this profile. The remaining keywords are medical-specific.
+    (["retrospective cohort", "case-control", "case control", "strobe",
+      "clinical registry", "trauma registry", "patient registry",
+      "ehr", "electronic health record", "his database", "his export",
+      "hospital information system", "observational clinical",
+      "observational study", "clinical observational",
+      "medical observational", "de-identified clinical",
+      "deidentified clinical", "irb", "ethics waiver"],
+     "medical_observational"),
 
     # Economics
     (["econometrics", "regression", "instrumental variable",
@@ -407,12 +430,14 @@ Available domains:
 - biology_singlecell: Single-cell analysis (scRNA-seq, scanpy)
 - biology_genomics: Genomics (sequencing, variant calling)
 - biology_protein: Protein science (folding, property prediction)
+- medical_observational: Medical observational studies (retrospective cohort, case-control, cross-sectional, STROBE, EHR/HIS/registry)
 - economics_empirical: Empirical economics (regression, causal inference)
 - mathematics_numerical: Numerical methods (ODE/PDE solvers, convergence)
 - mathematics_optimization: Optimization (convex, evolutionary)
 - security_detection: Security/intrusion detection
 - neuroscience_computational: Computational neuroscience (spiking networks, neural dynamics, population coding)
 - neuroscience_imaging: Brain imaging analysis (fMRI, EEG, MEG, functional connectivity)
+- clinical_sleep: Clinical sleep / perioperative monitoring (PSG, HSAT, sleep apnea, respiratory depression)
 - robotics_control: Robotics and control
 - generic: Cannot classify / cross-domain
 

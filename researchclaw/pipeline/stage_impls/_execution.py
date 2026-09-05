@@ -583,7 +583,6 @@ def _execute_iterative_refine(
     prompts: PromptManager | None = None,
 ) -> StageResult:
     from researchclaw.experiment.factory import create_sandbox
-    from researchclaw.experiment.validator import format_issues_for_llm, validate_code
 
     def _to_float(value: Any) -> float | None:
         try:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import textwrap
+from email.message import Message
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -716,6 +717,45 @@ class TestOpenAlex:
         assert p.source == "openalex"
         assert p.authors[0].name == "Ashish Vaswani"
 
+    def test_openalex_api_key_and_email_are_sent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """OpenAlex API key and mailto should be encoded in request params."""
+        import urllib.parse
+
+        from researchclaw.literature.openalex_client import search_openalex
+
+        response_bytes = json.dumps(SAMPLE_OPENALEX_RESPONSE).encode("utf-8")
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = response_bytes
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        captured: dict[str, str] = {}
+
+        def fake_urlopen(req: Any, *args: Any, **kwargs: Any) -> MagicMock:
+            captured["url"] = req.full_url
+            return mock_resp
+
+        monkeypatch.setattr(
+            "researchclaw.literature.openalex_client.urllib.request.urlopen",
+            fake_urlopen,
+        )
+
+        papers = search_openalex(
+            "attention",
+            limit=5,
+            email="bot@example.com",
+            api_key="oa-test-key",
+        )
+
+        params = urllib.parse.parse_qs(
+            urllib.parse.urlsplit(captured["url"]).query
+        )
+        assert len(papers) == 1
+        assert params["mailto"] == ["bot@example.com"]
+        assert params["api_key"] == ["oa-test-key"]
+
     def test_abstract_reconstruction(self) -> None:
         from researchclaw.literature.openalex_client import _reconstruct_abstract
 
@@ -782,6 +822,41 @@ class TestMultiSourceFallback:
         sources = {p.source for p in papers}
         assert "semantic_scholar" in sources or "arxiv" in sources
 
+    def test_search_papers_passes_openalex_options(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, object] = {}
+        openalex_paper = _make_paper(
+            paper_id="oalex-ok",
+            title="OpenAlex Paper",
+            source="openalex",
+            doi="10.1/oa",
+            arxiv_id="2401.12345",
+        )
+
+        def fake_openalex(query: str, **kwargs: object) -> list[Paper]:
+            captured["query"] = query
+            captured.update(kwargs)
+            return [openalex_paper]
+
+        monkeypatch.setattr(
+            "researchclaw.literature.search.search_openalex",
+            fake_openalex,
+        )
+        monkeypatch.setattr("researchclaw.literature.search.time.sleep", lambda _: None)
+
+        papers = search_papers(
+            "test",
+            sources=["openalex"],
+            openalex_email="bot@example.com",
+            openalex_api_key="oa-test-key",
+        )
+
+        assert len(papers) == 1
+        assert captured["query"] == "test"
+        assert captured["email"] == "bot@example.com"
+        assert captured["api_key"] == "oa-test-key"
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Cache TTL tests
@@ -808,3 +883,74 @@ class TestCacheTTL:
 
 
 import urllib.error
+
+
+class TestS2RetrySleepBudget:
+    """The retry loops must not sleep after their final attempt."""
+
+    def _run(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        exc: Exception,
+        call: str,
+    ) -> list[float]:
+        import researchclaw.literature.semantic_scholar as s2
+
+        s2._reset_circuit_breaker()
+        delays: list[float] = []
+        monkeypatch.setattr(
+            "researchclaw.literature.semantic_scholar.urllib.request.urlopen",
+            lambda *a, **kw: (_ for _ in ()).throw(exc),
+        )
+        monkeypatch.setattr(
+            "researchclaw.literature.semantic_scholar.time.sleep",
+            lambda d: delays.append(d),
+        )
+        if call == "get":
+            assert s2._request_with_retry("https://x/y", {}) is None
+        else:
+            assert s2._post_with_retry("https://x/y", {}, b"{}") is None
+        return delays
+
+    def test_get_connection_error_does_not_sleep_after_final_attempt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from researchclaw.literature.semantic_scholar import _MAX_RETRIES
+
+        delays = self._run(monkeypatch, ConnectionResetError("boom"), "get")
+        assert len(delays) == _MAX_RETRIES - 1
+
+    def test_post_connection_error_does_not_sleep_after_final_attempt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from researchclaw.literature.semantic_scholar import _MAX_RETRIES
+
+        delays = self._run(monkeypatch, ConnectionResetError("boom"), "post")
+        assert len(delays) == _MAX_RETRIES - 1
+
+    def test_get_429_does_not_sleep_after_final_attempt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from researchclaw.literature.semantic_scholar import _MAX_RETRIES
+
+        err = urllib.error.HTTPError("url", 429, "Too Many", Message(), None)
+        delays = self._run(monkeypatch, err, "get")
+        assert len(delays) <= _MAX_RETRIES - 1
+
+    def test_post_429_does_not_sleep_after_final_attempt(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from researchclaw.literature.semantic_scholar import _MAX_RETRIES
+
+        err = urllib.error.HTTPError("url", 429, "Too Many", Message(), None)
+        delays = self._run(monkeypatch, err, "post")
+        assert len(delays) <= _MAX_RETRIES - 1
+
+    def test_retries_still_back_off_between_attempts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Guard against 'fixing' the sleep by removing backoff entirely."""
+        delays = self._run(monkeypatch, ConnectionResetError("boom"), "get")
+        assert delays, "expected backoff sleeps between attempts"
+        assert delays == sorted(delays), "backoff should be non-decreasing"
+        assert all(d > 0 for d in delays)

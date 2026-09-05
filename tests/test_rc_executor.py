@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -320,11 +321,10 @@ def test_execute_stage_creates_stage_dir_writes_artifacts_and_meta(
     assert "goal.md" in result.artifacts
     assert "hardware_profile.json" in result.artifacts
     assert (run_dir / "stage-01").is_dir()
-    assert (
-        (run_dir / "stage-01" / "goal.md")
-        .read_text(encoding="utf-8")
-        .startswith("# Goal")
-    )
+    goal_text = (run_dir / "stage-01" / "goal.md").read_text(encoding="utf-8")
+    # goal.md now starts with a disclaimer blockquote; the original content follows
+    assert "# Goal" in goal_text
+    assert "unverified draft" in goal_text  # disclaimer is present
     assert (run_dir / "stage-01" / "hardware_profile.json").exists()
     assert len(fake_llm.calls) == 1
 
@@ -2002,7 +2002,418 @@ class TestExpandSearchQueries:
         assert has_benchmark
 
 
-# ── R4-1: Experiment Budget Guard Tests ──────────────────────────────
+# Stage 4 literature collection regression tests
+
+
+class TestLiteratureCollectConfiguration:
+    """Regression coverage for Stage 4 configuration and fallback behavior."""
+
+    @staticmethod
+    def _prepare_stage(run_dir: Path, *, year_min: int = 2021) -> Path:
+        _write_prior_artifact(
+            run_dir,
+            3,
+            "queries.json",
+            json.dumps(
+                {"queries": ["test-driven science"], "year_min": year_min}
+            ),
+        )
+        _write_prior_artifact(
+            run_dir,
+            3,
+            "search_plan.yaml",
+            "queries:\n  - test-driven science\n",
+        )
+        stage_dir = run_dir / "stage-04"
+        stage_dir.mkdir(exist_ok=True)
+        return stage_dir
+
+    @staticmethod
+    def _patch_successful_search(
+        monkeypatch: pytest.MonkeyPatch,
+        captured: dict[str, object],
+    ) -> None:
+        from researchclaw.literature.models import Paper
+
+        def fake_search(queries: list[str], **kwargs: object) -> list[Paper]:
+            captured["queries"] = queries
+            captured.update(kwargs)
+            return [
+                Paper(
+                    paper_id="openalex-W123",
+                    title="A Real Literature Search Result",
+                    year=2025,
+                    url="https://openalex.org/W123",
+                    source="openalex",
+                )
+            ]
+
+        monkeypatch.setattr(
+            "researchclaw.literature.search.search_papers_multi_query",
+            fake_search,
+        )
+        monkeypatch.setattr(
+            "researchclaw.data.load_seminal_papers",
+            lambda _topic: [],
+        )
+
+    @staticmethod
+    def _read_candidates(stage_dir: Path) -> list[dict[str, Any]]:
+        return [
+            json.loads(line)
+            for line in (stage_dir / "candidates.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+
+    @pytest.mark.parametrize(
+        (
+            "literature_s2_key",
+            "llm_s2_key",
+            "s2_env_name",
+            "s2_env_value",
+            "expected_s2_key",
+            "literature_openalex_key",
+            "openalex_env_name",
+            "openalex_env_value",
+            "expected_openalex_key",
+        ),
+        [
+            pytest.param(
+                "",
+                "",
+                "S2_API_KEY",
+                "s2-env-key",
+                "s2-env-key",
+                "",
+                "OPENALEX_API_KEY",
+                "openalex-env-key",
+                "openalex-env-key",
+                id="default-environment-keys",
+            ),
+            pytest.param(
+                "",
+                "",
+                "S2_API_KEY",
+                "",
+                "",
+                "",
+                "OPENALEX_API_KEY",
+                "",
+                "",
+                id="no-api-keys",
+            ),
+            pytest.param(
+                "",
+                "",
+                "CUSTOM_S2_KEY",
+                "custom-s2-env-key",
+                "custom-s2-env-key",
+                "",
+                "CUSTOM_OPENALEX_KEY",
+                "custom-openalex-env-key",
+                "custom-openalex-env-key",
+                id="custom-environment-names",
+            ),
+            pytest.param(
+                "inline-s2-key",
+                "llm-s2-key",
+                "S2_API_KEY",
+                "s2-env-key",
+                "inline-s2-key",
+                "inline-openalex-key",
+                "OPENALEX_API_KEY",
+                "openalex-env-key",
+                "inline-openalex-key",
+                id="literature-inline-keys-win",
+            ),
+            pytest.param(
+                "",
+                "llm-s2-key",
+                "S2_API_KEY",
+                "s2-env-key",
+                "llm-s2-key",
+                "",
+                "OPENALEX_API_KEY",
+                "openalex-env-key",
+                "openalex-env-key",
+                id="llm-s2-key-wins-over-environment",
+            ),
+        ],
+    )
+    def test_resolves_keys_and_passes_all_search_configuration(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        rc_config: RCConfig,
+        adapters: AdapterBundle,
+        run_dir: Path,
+        literature_s2_key: str,
+        llm_s2_key: str,
+        s2_env_name: str,
+        s2_env_value: str,
+        expected_s2_key: str,
+        literature_openalex_key: str,
+        openalex_env_name: str,
+        openalex_env_value: str,
+        expected_openalex_key: str,
+    ) -> None:
+        from researchclaw.pipeline.stage_impls._literature import (
+            _execute_literature_collect,
+        )
+
+        stage_dir = self._prepare_stage(run_dir, year_min=2019)
+        captured: dict[str, object] = {}
+        self._patch_successful_search(monkeypatch, captured)
+
+        for env_name in {
+            "S2_API_KEY",
+            "OPENALEX_API_KEY",
+            s2_env_name,
+            openalex_env_name,
+        }:
+            monkeypatch.delenv(env_name, raising=False)
+        if s2_env_value:
+            monkeypatch.setenv(s2_env_name, s2_env_value)
+        if openalex_env_value:
+            monkeypatch.setenv(openalex_env_name, openalex_env_value)
+
+        config = replace(
+            rc_config,
+            llm=replace(rc_config.llm, s2_api_key=llm_s2_key),
+            literature_search=replace(
+                rc_config.literature_search,
+                sources=("openalex", "arxiv"),
+                max_results_per_query=7,
+                inter_query_delay_sec=0.25,
+                openalex_email="research@example.com",
+                openalex_api_key=literature_openalex_key,
+                openalex_api_key_env=openalex_env_name,
+                s2_api_key=literature_s2_key,
+                s2_api_key_env=s2_env_name,
+            ),
+            web_search=replace(rc_config.web_search, enabled=False),
+        )
+
+        result = _execute_literature_collect(
+            stage_dir,
+            run_dir,
+            config,
+            adapters,
+            llm=None,
+        )
+
+        assert result.status == StageStatus.DONE
+        assert captured["s2_api_key"] == expected_s2_key
+        assert captured["openalex_api_key"] == expected_openalex_key
+        assert captured["limit_per_query"] == 7
+        assert captured["sources"] == ("openalex", "arxiv")
+        assert captured["year_min"] == 2019
+        assert captured["openalex_email"] == "research@example.com"
+        assert captured["inter_query_delay"] == 0.25
+        assert "test-driven science" in cast(list[str], captured["queries"])
+
+        search_meta = json.loads(
+            (stage_dir / "search_meta.json").read_text(encoding="utf-8")
+        )
+        assert search_meta["real_search"] is True
+        assert search_meta["year_min"] == 2019
+        candidates = self._read_candidates(stage_dir)
+        assert candidates[0]["paper_id"] == "openalex-W123"
+        assert not any(row.get("is_placeholder") for row in candidates)
+
+    def test_web_search_uses_config_and_writes_context_artifacts(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        rc_config: RCConfig,
+        adapters: AdapterBundle,
+        run_dir: Path,
+    ) -> None:
+        from researchclaw.pipeline.stage_impls._literature import (
+            _execute_literature_collect,
+        )
+
+        stage_dir = self._prepare_stage(run_dir)
+        captured: dict[str, object] = {}
+        self._patch_successful_search(monkeypatch, captured)
+
+        class FakeWebResult:
+            scholar_papers: list[object] = []
+            web_results: list[object] = [SimpleNamespace(title="Web result")]
+            crawled_pages: list[object] = []
+
+            @staticmethod
+            def to_context_string(*, max_length: int) -> str:
+                captured["web_context_max_length"] = max_length
+                return "Verified web search context"
+
+            @staticmethod
+            def to_dict() -> dict[str, object]:
+                return {
+                    "web_results": [{"title": "Web result"}],
+                    "web_results_count": 1,
+                }
+
+        class FakeWebSearchAgent:
+            def __init__(self, **kwargs: object) -> None:
+                captured["web_agent_kwargs"] = kwargs
+
+            def search_and_extract(
+                self,
+                topic: str,
+                *,
+                search_queries: list[str],
+            ) -> FakeWebResult:
+                captured["web_topic"] = topic
+                captured["web_queries"] = search_queries
+                return FakeWebResult()
+
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        monkeypatch.setenv("CUSTOM_TAVILY_KEY", "tavily-env-key")
+        monkeypatch.setattr(
+            "researchclaw.web.agent.WebSearchAgent",
+            FakeWebSearchAgent,
+        )
+        config = replace(
+            rc_config,
+            web_search=replace(
+                rc_config.web_search,
+                enabled=True,
+                tavily_api_key="",
+                tavily_api_key_env="CUSTOM_TAVILY_KEY",
+                enable_scholar=False,
+                enable_crawling=False,
+                enable_pdf_extraction=False,
+                max_web_results=4,
+                max_scholar_results=3,
+                max_crawl_urls=2,
+            ),
+        )
+
+        result = _execute_literature_collect(
+            stage_dir,
+            run_dir,
+            config,
+            adapters,
+            llm=None,
+        )
+
+        assert result.status == StageStatus.DONE
+        assert captured["web_agent_kwargs"] == {
+            "tavily_api_key": "tavily-env-key",
+            "enable_scholar": False,
+            "enable_crawling": False,
+            "enable_pdf": False,
+            "max_web_results": 4,
+            "max_scholar_results": 3,
+            "max_crawl_urls": 2,
+        }
+        assert captured["web_topic"] == rc_config.research.topic
+        assert captured["web_queries"] == ["test-driven science"]
+        assert captured["web_context_max_length"] == 20_000
+        assert (stage_dir / "web_context.md").read_text(
+            encoding="utf-8"
+        ) == "Verified web search context"
+        web_metadata = json.loads(
+            (stage_dir / "web_search_result.json").read_text(encoding="utf-8")
+        )
+        assert web_metadata["web_results_count"] == 1
+        assert "web_context.md" in result.artifacts
+        assert "web_search_result.json" in result.artifacts
+
+    def test_execute_stage_runs_literature_contract_without_fallback(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        rc_config: RCConfig,
+        adapters: AdapterBundle,
+        run_dir: Path,
+    ) -> None:
+        stage_dir = self._prepare_stage(run_dir)
+        captured: dict[str, object] = {}
+        self._patch_successful_search(monkeypatch, captured)
+        config = replace(
+            rc_config,
+            web_search=replace(rc_config.web_search, enabled=False),
+        )
+
+        result = rc_executor.execute_stage(
+            Stage.LITERATURE_COLLECT,
+            run_dir=run_dir,
+            run_id="stage-4-regression",
+            config=config,
+            adapters=adapters,
+            auto_approve_gates=True,
+        )
+
+        assert result.status == StageStatus.DONE
+        assert captured["sources"] == config.literature_search.sources
+        assert (stage_dir / "candidates.jsonl").exists()
+        assert (stage_dir / "references.bib").exists()
+        assert (stage_dir / "decision.json").exists()
+        assert (stage_dir / "stage_health.json").exists()
+        search_meta = json.loads(
+            (stage_dir / "search_meta.json").read_text(encoding="utf-8")
+        )
+        assert search_meta["real_search"] is True
+        assert not any(
+            row.get("is_placeholder")
+            for row in self._read_candidates(stage_dir)
+        )
+
+    def test_api_failure_logs_and_uses_placeholder_fallback(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        rc_config: RCConfig,
+        adapters: AdapterBundle,
+        run_dir: Path,
+    ) -> None:
+        from researchclaw.pipeline.stage_impls._literature import (
+            _execute_literature_collect,
+        )
+
+        stage_dir = self._prepare_stage(run_dir)
+
+        def failing_search(
+            _queries: list[str], **_kwargs: object
+        ) -> list[object]:
+            raise RuntimeError("simulated literature backend outage")
+
+        monkeypatch.setattr(
+            "researchclaw.literature.search.search_papers_multi_query",
+            failing_search,
+        )
+        monkeypatch.setattr(
+            "researchclaw.data.load_seminal_papers",
+            lambda _topic: [],
+        )
+        config = replace(
+            rc_config,
+            web_search=replace(rc_config.web_search, enabled=False),
+        )
+
+        result = _execute_literature_collect(
+            stage_dir,
+            run_dir,
+            config,
+            adapters,
+            llm=None,
+        )
+
+        assert result.status == StageStatus.DONE
+        assert "falling back to LLM" in caplog.text
+        assert "simulated literature backend outage" in caplog.text
+        candidates = self._read_candidates(stage_dir)
+        assert len(candidates) == 20
+        assert all(row.get("is_placeholder") for row in candidates)
+        assert not (stage_dir / "references.bib").exists()
+        search_meta = json.loads(
+            (stage_dir / "search_meta.json").read_text(encoding="utf-8")
+        )
+        assert search_meta["real_search"] is False
+        assert search_meta["bibtex_entries"] == 0
+
+
+# R4-1: Experiment Budget Guard Tests
 
 
 class TestComputeBudgetBlock:
@@ -3599,3 +4010,148 @@ class TestExperimentValidatorPrecision:
             in issue
             for issue in issues
         )
+
+
+# ============================================================
+# IMP-21: Stage 6 (knowledge_extract) refuses to run on empty shortlist
+# ============================================================
+
+
+class TestIMP21_KnowledgeExtractEmptyShortlistGate:
+    """IMP-21: Stage 6 must short-circuit when Stage 5
+    (literature_screen) has produced no shortlist (PAUSED state with
+    ``decision="rejected_all"``). Without this gate, Stage 6 spends an
+    LLM turn extracting cards from empty input, produces low-quality
+    fallback content, and lets downstream stages cascade on garbage.
+
+    We use ``StageStatus.PAUSED`` (not ``BLOCKED_APPROVAL``) because the
+    runner halts on PAUSED unconditionally, whereas BLOCKED_APPROVAL only
+    halts when ``stop_on_gate=True`` — and ``--auto-approve`` explicitly
+    sets ``stop_on_gate=False``, which is the exact scenario this gate
+    must prevent the cascade for. Mirrors the existing Stage 5 pattern
+    (literature_screen returns PAUSED with ``decision="rejected_all"``).
+    """
+
+    def test_returns_paused_when_shortlist_missing(
+        self, rc_config: RCConfig, adapters: AdapterBundle, run_dir: Path
+    ) -> None:
+        """No stage-05*/shortlist.jsonl exists → PAUSED (halts pipeline)."""
+        from researchclaw.pipeline.stage_impls._literature import (
+            _execute_knowledge_extract,
+        )
+
+        stage_dir = run_dir / "stage-06"
+        stage_dir.mkdir()
+
+        result = _execute_knowledge_extract(
+            stage_dir=stage_dir,
+            run_dir=run_dir,
+            config=rc_config,
+            adapters=adapters,
+            llm=None,  # gate must trigger before any LLM call
+        )
+
+        assert result.status == StageStatus.PAUSED
+        assert result.stage == Stage.KNOWLEDGE_EXTRACT
+        assert result.error is not None
+        assert "shortlist" in result.error.lower()
+        assert result.decision == "upstream_blocked"
+        meta_path = stage_dir / "knowledge_meta.json"
+        assert meta_path.is_file(), "Gate must write knowledge_meta.json"
+        meta = json.loads(meta_path.read_text())
+        assert meta["outcome"] == "upstream_empty_shortlist"
+        assert meta["shortlist_rows"] == 0
+
+    def test_returns_paused_when_shortlist_empty_string(
+        self, rc_config: RCConfig, adapters: AdapterBundle, run_dir: Path
+    ) -> None:
+        """stage-05/shortlist.jsonl exists but is 0-byte → PAUSED."""
+        from researchclaw.pipeline.stage_impls._literature import (
+            _execute_knowledge_extract,
+        )
+
+        s5_dir = run_dir / "stage-05"
+        s5_dir.mkdir()
+        (s5_dir / "shortlist.jsonl").write_text("", encoding="utf-8")
+
+        stage_dir = run_dir / "stage-06"
+        stage_dir.mkdir()
+
+        result = _execute_knowledge_extract(
+            stage_dir=stage_dir,
+            run_dir=run_dir,
+            config=rc_config,
+            adapters=adapters,
+            llm=None,
+        )
+
+        assert result.status == StageStatus.PAUSED
+        assert "stage-06/knowledge_meta.json" in result.evidence_refs
+
+    def test_returns_paused_when_shortlist_only_whitespace(
+        self, rc_config: RCConfig, adapters: AdapterBundle, run_dir: Path
+    ) -> None:
+        """stage-05/shortlist.jsonl is just whitespace → PAUSED."""
+        from researchclaw.pipeline.stage_impls._literature import (
+            _execute_knowledge_extract,
+        )
+
+        s5_dir = run_dir / "stage-05"
+        s5_dir.mkdir()
+        (s5_dir / "shortlist.jsonl").write_text("\n\n  \n", encoding="utf-8")
+
+        stage_dir = run_dir / "stage-06"
+        stage_dir.mkdir()
+
+        result = _execute_knowledge_extract(
+            stage_dir=stage_dir,
+            run_dir=run_dir,
+            config=rc_config,
+            adapters=adapters,
+            llm=None,
+        )
+
+        assert result.status == StageStatus.PAUSED
+
+    def test_proceeds_when_shortlist_has_at_least_one_row(
+        self, rc_config: RCConfig, adapters: AdapterBundle, run_dir: Path
+    ) -> None:
+        """stage-05/shortlist.jsonl has >=1 valid row → gate passes,
+        stage proceeds (but exits early since llm=None and no real
+        cards can be generated, so we just assert it didn't BLOCK)."""
+        from researchclaw.pipeline.stage_impls._literature import (
+            _execute_knowledge_extract,
+        )
+
+        s5_dir = run_dir / "stage-05"
+        s5_dir.mkdir()
+        (s5_dir / "shortlist.jsonl").write_text(
+            json.dumps(
+                {
+                    "paper_id": "oalex-W123",
+                    "title": "A Real Paper About Label Noise",
+                    "abstract": "We study symmetric noise on MNIST.",
+                    "year": 2024,
+                    "cite_key": "doe2024noise",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        stage_dir = run_dir / "stage-06"
+        stage_dir.mkdir()
+
+        result = _execute_knowledge_extract(
+            stage_dir=stage_dir,
+            run_dir=run_dir,
+            config=rc_config,
+            adapters=adapters,
+            llm=None,  # no LLM, but gate must not trigger
+        )
+
+        # Gate did NOT trigger — stage proceeded past the check.
+        # Without an LLM, the stage falls back to a template-card path,
+        # which is its existing behaviour (not gated by IMP-21).
+        assert result.status != StageStatus.PAUSED
+        assert result.stage == Stage.KNOWLEDGE_EXTRACT

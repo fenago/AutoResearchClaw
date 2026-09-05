@@ -569,13 +569,22 @@ def _check_near_random_accuracy(diag: ExperimentDiagnosis, summary: dict) -> Non
                 best_acc = fv
                 acc_key = key
 
-    if best_acc is not None and 0 < best_acc < 15.0:
+    # Normalise to a percentage: accuracy is reported either as a fraction
+    # (0–1, sklearn/torchmetrics default) or a percentage (0–100). Values
+    # <= 1.0 are treated as fractions so a legitimate 0.92 (92%) is NOT
+    # mis-diagnosed as "near random chance".
+    if best_acc is not None:
+        best_acc_pct = best_acc * 100.0 if best_acc <= 1.0 else best_acc
+    else:
+        best_acc_pct = None
+
+    if best_acc_pct is not None and 0 < best_acc_pct < 15.0:
         diag.deficiencies.append(Deficiency(
             type=DeficiencyType.HYPERPARAMETER_ISSUE,
             severity="critical",
             description=(
-                f"Best accuracy is {best_acc:.1f}% ({acc_key}), near random chance. "
-                f"The model is not learning."
+                f"Best accuracy is {best_acc_pct:.1f}% ({acc_key}), near random "
+                f"chance. The model is not learning."
             ),
             suggested_fix=(
                 "Check: (1) Learning rate too high/low — try 0.001 for Adam, 0.1 for SGD. "

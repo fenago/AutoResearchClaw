@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import math
@@ -583,7 +584,17 @@ def _extract_code_block(content: str) -> str:
     match = re.search(r"```(?:python)?\s*(.*?)\s*```", content, flags=re.DOTALL)
     if match is not None:
         return match.group(1).strip()
-    return content.strip()
+    # No fence found. Only trust the raw response as code if it actually
+    # parses as Python — otherwise a conversational reply (e.g. "Same, no
+    # change.") gets accepted verbatim and silently corrupts the file.
+    stripped = content.strip()
+    if not stripped:
+        return ""
+    try:
+        ast.parse(stripped)
+    except SyntaxError:
+        return ""
+    return stripped
 
 
 def _extract_multi_file_blocks(content: str) -> dict[str, str]:

@@ -9,6 +9,29 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def _paper_to_dict(paper: Any, source: str, fallback_date: str) -> dict[str, Any]:
+    """Normalise a literature ``Paper`` dataclass into a feed dict.
+
+    The literature clients return frozen ``Paper`` dataclasses (not dicts),
+    so attribute access is used rather than ``.get()``.
+    """
+    authors = [
+        getattr(a, "name", "") for a in getattr(paper, "authors", ()) or ()
+    ]
+    year = getattr(paper, "year", None)
+    published = str(year) if year else fallback_date
+    return {
+        "title": getattr(paper, "title", "") or "",
+        "authors": authors,
+        "abstract": getattr(paper, "abstract", "") or "",
+        "url": getattr(paper, "url", "") or "",
+        "source": source,
+        "published_date": published,
+        "arxiv_id": getattr(paper, "arxiv_id", "") or "",
+        "citation_count": getattr(paper, "citation_count", 0) or 0,
+    }
+
+
 class FeedManager:
     """Manage paper feeds from multiple sources."""
 
@@ -80,15 +103,7 @@ class FeedManager:
         try:
             results = search_arxiv(query, limit=max_papers)
             return [
-                {
-                    "title": r.get("title", ""),
-                    "authors": r.get("authors", []),
-                    "abstract": r.get("abstract", ""),
-                    "url": r.get("url", ""),
-                    "source": "arxiv",
-                    "published_date": r.get("published", since_date.isoformat()),
-                    "arxiv_id": r.get("arxiv_id", ""),
-                }
+                _paper_to_dict(r, "arxiv", since_date.isoformat())
                 for r in results
             ]
         except Exception as exc:
@@ -103,31 +118,23 @@ class FeedManager:
     ) -> list[dict[str, Any]]:
         """Fetch papers from Semantic Scholar API."""
         try:
-            from researchclaw.literature.semantic_scholar import search_s2
+            from researchclaw.literature.semantic_scholar import (
+                search_semantic_scholar,
+            )
         except ImportError:
             logger.debug("semantic_scholar client not available")
             return []
 
         query = " ".join(domains) if domains else "machine learning"
         try:
-            results = search_s2(
+            results = search_semantic_scholar(
                 query,
                 limit=max_papers,
                 year_min=since_date.year,
                 api_key=self.s2_api_key,
             )
             return [
-                {
-                    "title": r.get("title", ""),
-                    "authors": [
-                        a.get("name", "") for a in r.get("authors", [])
-                    ],
-                    "abstract": r.get("abstract", ""),
-                    "url": r.get("url", ""),
-                    "source": "semantic_scholar",
-                    "published_date": str(r.get("year", since_date.year)),
-                    "citation_count": r.get("citationCount", 0),
-                }
+                _paper_to_dict(r, "semantic_scholar", str(since_date.year))
                 for r in results
             ]
         except Exception as exc:
@@ -151,15 +158,7 @@ class FeedManager:
         try:
             results = search_openalex(query, limit=max_papers)
             return [
-                {
-                    "title": r.get("title", ""),
-                    "authors": r.get("authors", []),
-                    "abstract": r.get("abstract", ""),
-                    "url": r.get("url", ""),
-                    "source": "openalex",
-                    "published_date": r.get("publication_date", ""),
-                    "citation_count": r.get("cited_by_count", 0),
-                }
+                _paper_to_dict(r, "openalex", str(since_date.year))
                 for r in results
             ]
         except Exception as exc:

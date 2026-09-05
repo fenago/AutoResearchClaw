@@ -131,6 +131,32 @@ def _collect_experiment_evidence(run_dir: Path) -> str:
     )
 
 
+def _build_reviewer_or_generator(config, generator_llm):
+    """Return (review_client, author_model, judge_model) for review stages.
+
+    Falls back to the generator client when no independent reviewer is
+    configured, preserving legacy behaviour. author_model / judge_model are
+    recorded into artifacts for auditability.
+    """
+    author_model = ""
+    if generator_llm is not None:
+        author_model = (
+            getattr(getattr(generator_llm, "config", None), "primary_model", "") or ""
+        )
+    try:
+        from researchclaw.llm import build_reviewer_llm
+
+        reviewer = build_reviewer_llm(config)
+    except Exception:  # noqa: BLE001
+        reviewer = None
+    if reviewer is not None:
+        judge_model = (
+            getattr(getattr(reviewer, "config", None), "primary_model", "") or ""
+        )
+        return reviewer, author_model, judge_model
+    return generator_llm, author_model, author_model
+
+
 # ---------------------------------------------------------------------------
 # Stage 18: Peer Review
 # ---------------------------------------------------------------------------
@@ -146,6 +172,13 @@ def _execute_peer_review(
 ) -> StageResult:
     draft = _read_prior_artifact(run_dir, "paper_draft.md") or ""
     experiment_evidence = _collect_experiment_evidence(run_dir)
+
+    # Review must not be written by the model that wrote the paper: when an
+    # independent reviewer is configured it answers here instead of the
+    # generator. Falls back to the generator when it is not.
+    _review_llm, _author_model, _judge_model = _build_reviewer_or_generator(
+        config, llm
+    )
 
     # Load draft quality warnings from Stage 17 (if available)
     _quality_suffix = ""
@@ -163,7 +196,7 @@ def _execute_peer_review(
         except Exception:  # noqa: BLE001
             pass
 
-    if llm is not None:
+    if _review_llm is not None:
         _pm = prompts or PromptManager()
         _overlay = _get_evolution_overlay(run_dir, "peer_review")
         sp = _pm.for_stage(
@@ -180,7 +213,7 @@ def _execute_peer_review(
         _review_system = sp.system
         _review_user = sp.user + _quality_suffix
         resp = _chat_with_prompt(
-            llm,
+            _review_llm,
             _review_system,
             _review_user,
             json_mode=sp.json_mode,
@@ -200,11 +233,30 @@ def _execute_peer_review(
 - Weaknesses: Discussion underdeveloped.
 - Actionable revisions: Expand limitations and broader impact.
 """
-    (stage_dir / "reviews.md").write_text(reviews, encoding="utf-8")
+    # Record who reviewed what, so a run can be audited for reviewer
+    # independence after the fact.
+    _independent = bool(_judge_model and _judge_model != _author_model)
+    _prov_header = (
+        f"<!-- review_provenance: author_model={_author_model or 'unknown'} "
+        f"judge_model={_judge_model or _author_model or 'unknown'} "
+        f"independent={'yes' if _independent else 'no'} -->\n"
+    )
+    (stage_dir / "reviews.md").write_text(_prov_header + reviews, encoding="utf-8")
+    (stage_dir / "review_provenance.json").write_text(
+        json.dumps(
+            {
+                "author_model": _author_model,
+                "judge_model": _judge_model or _author_model,
+                "independent_reviewer": _independent,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     return StageResult(
         stage=Stage.PEER_REVIEW,
         status=StageStatus.DONE,
-        artifacts=("reviews.md",),
+        artifacts=("reviews.md", "review_provenance.json"),
         evidence_refs=("stage-18/reviews.md",),
     )
 
@@ -388,6 +440,11 @@ def _execute_quality_gate(
 ) -> StageResult:
     revised = _read_prior_artifact(run_dir, "paper_revised.md") or ""
     report: dict[str, Any] | None = None
+    # The author model should not be the one deciding whether its own paper
+    # passes the gate: judge with the independent model when configured.
+    _judge_llm, _author_model, _judge_model = _build_reviewer_or_generator(
+        config, llm
+    )
 
     # BUG-25 + BUG-180: Load the RICHEST experiment summary for cross-checking.
     # _read_prior_artifact returns the first match in reverse-sorted order,
@@ -442,7 +499,7 @@ def _execute_quality_gate(
         if _best_richness > 0:
             _exp_failed = False
 
-    if llm is not None:
+    if _judge_llm is not None:
         _pm = prompts or PromptManager()
         # IMP-33: Evaluate the full paper instead of truncating to 12K chars.
         # Split into chunks if very long, but prefer sending the full text.
@@ -482,7 +539,7 @@ def _execute_quality_gate(
             revised=paper_for_eval + _exp_context,
         )
         resp = _chat_with_prompt(
-            llm,
+            _judge_llm,
             sp.system,
             sp.user,
             json_mode=sp.json_mode,

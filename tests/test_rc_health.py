@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import socket
 import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import NamedTuple, cast
 from unittest.mock import patch
@@ -232,6 +233,78 @@ def test_check_model_chain_no_models() -> None:
     )
     assert result.status == "warn"
     assert "No models configured" in result.detail
+
+
+def test_is_anthropic_url() -> None:
+    assert health._is_anthropic("https://api.anthropic.com")
+    assert health._is_anthropic("https://api.anthropic.com/v1")
+    assert not health._is_anthropic("https://api.openai.com/v1")
+
+
+def test_anthropic_messages_url() -> None:
+    assert (
+        health._anthropic_messages_url("https://api.anthropic.com")
+        == "https://api.anthropic.com/v1/messages"
+    )
+    assert (
+        health._anthropic_messages_url("https://api.anthropic.com/v1")
+        == "https://api.anthropic.com/v1/messages"
+    )
+
+
+def test_check_llm_connectivity_anthropic_pass() -> None:
+    with patch("urllib.request.urlopen", return_value=_DummyHTTPResponse(status=200)):
+        result = health.check_llm_connectivity(
+            "https://api.anthropic.com", "sk-ant-test"
+        )
+    assert result.status == "pass"
+
+
+def test_check_llm_connectivity_anthropic_404_still_pass() -> None:
+    # Anthropic returns 404 with not_found_error for unknown models — still proves reachability.
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=urllib.error.HTTPError(
+            "https://api.anthropic.com/v1/messages", 404, "not found", {}, None
+        ),
+    ):
+        result = health.check_llm_connectivity(
+            "https://api.anthropic.com", "sk-ant-test"
+        )
+    assert result.status == "pass"
+
+
+def test_check_api_key_valid_anthropic_invalid_401() -> None:
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=urllib.error.HTTPError(
+            "https://api.anthropic.com/v1/messages", 401, "unauthorized", {}, None
+        ),
+    ):
+        result = health.check_api_key_valid("https://api.anthropic.com", "bad")
+    assert result.status == "fail"
+    assert "Invalid API key" in result.detail
+
+
+def test_check_model_chain_anthropic_pass() -> None:
+    with patch("urllib.request.urlopen", return_value=_DummyHTTPResponse(status=200)):
+        result = health.check_model_chain(
+            "https://api.anthropic.com", "sk-ant-test", "claude-sonnet-4-6"
+        )
+    assert result.status == "pass"
+
+
+def test_check_model_chain_anthropic_unknown_model() -> None:
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=urllib.error.HTTPError(
+            "https://api.anthropic.com/v1/messages", 404, "not found", {}, None
+        ),
+    ):
+        result = health.check_model_chain(
+            "https://api.anthropic.com", "sk-ant-test", "claude-fake-9"
+        )
+    assert result.status == "fail"
 
 
 def test_check_sandbox_python_exists() -> None:
@@ -604,3 +677,23 @@ def test_print_doctor_report_ascii_fallback(monkeypatch: pytest.MonkeyPatch) -> 
     out = "".join(fake_stdout.parts)
     assert "[OK] python_version: ok" in out
     assert "Result: PASS" in out
+
+
+def test_check_llm_connectivity_probes_with_get_not_head() -> None:
+    """Some OpenAI-compatible gateways reject HEAD on /models (see #292, #241).
+
+    Probing with HEAD makes `doctor` report a false failure for endpoints
+    that serve normal GET traffic fine.
+    """
+    captured: list[urllib.request.Request] = []
+
+    def _capture(req, timeout=None):  # type: ignore[no-untyped-def]
+        captured.append(req)
+        return _DummyHTTPResponse(status=200)
+
+    with patch("urllib.request.urlopen", _capture):
+        result = health.check_llm_connectivity("https://api.example.com/v1")
+
+    assert result.status == "pass"
+    assert captured, "expected a probe request"
+    assert captured[0].get_method() == "GET"

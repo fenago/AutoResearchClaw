@@ -52,6 +52,7 @@ def search_openalex(
     limit: int = 20,
     year_min: int = 0,
     email: str = _POLITE_EMAIL,
+    api_key: str = "",
 ) -> list[Paper]:
     """Search OpenAlex for papers matching *query*.
 
@@ -65,6 +66,8 @@ def search_openalex(
         If >0, restrict to papers published in this year or later.
     email:
         Polite pool email for higher rate limits.
+    api_key:
+        Optional OpenAlex API key.
 
     Returns
     -------
@@ -97,6 +100,8 @@ def search_openalex(
             "cited_by_count,doi,ids,abstract_inverted_index,type"
         ),
     }
+    if api_key:
+        params["api_key"] = api_key
     if filters:
         params["filter"] = ",".join(filters)
 
@@ -184,7 +189,7 @@ def _request_with_retry(
                 time.sleep(wait + jitter)
                 continue
 
-            logger.warning("OpenAlex HTTP %d for %s", exc.code, url)
+            logger.warning("OpenAlex HTTP %d for %s", exc.code, _redact_url(url))
             return None
 
         except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
@@ -199,8 +204,21 @@ def _request_with_retry(
             )
             time.sleep(wait + jitter)
 
-    logger.error("OpenAlex request exhausted retries for: %s", url)
+    logger.error("OpenAlex request exhausted retries for: %s", _redact_url(url))
     return None
+
+
+def _redact_url(url: str) -> str:
+    """Redact sensitive query parameters before logging URLs."""
+    parsed = urllib.parse.urlsplit(url)
+    query = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    redacted = [
+        (key, "***" if key.lower() == "api_key" else value)
+        for key, value in query
+    ]
+    return urllib.parse.urlunsplit(
+        parsed._replace(query=urllib.parse.urlencode(redacted))
+    )
 
 
 def _reconstruct_abstract(inverted_index: dict[str, list[int]] | None) -> str:

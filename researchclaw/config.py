@@ -188,6 +188,7 @@ class AcpConfig:
     acpx_command: str = ""
     session_name: str = "researchclaw"
     timeout_sec: int = 1800
+    max_turns: int = 1
 
 
 @dataclass(frozen=True)
@@ -202,7 +203,45 @@ class LlmConfig:
     s2_api_key: str = ""
     notes: str = ""
     timeout_sec: int = 600
+    # Independent reviewer/judge model: breaks the generator == judge
+    # self-preference in peer review and the quality gate.
+    # Empty reviewer_model => reviewing/judging reuses the generator model
+    # (backward-compatible). If only reviewer_model is set, the reviewer reuses
+    # the main provider/base_url/key but with a different model. Set
+    # reviewer_provider/base_url/api_key(_env) for a fully independent provider
+    # (e.g. generator=GPT, reviewer=Claude).
+    reviewer_model: str = ""
+    reviewer_provider: str = ""
+    reviewer_base_url: str = ""
+    reviewer_api_key: str = ""
+    reviewer_api_key_env: str = ""
+    # Multi-model debate engine. Opt-in; the debate panel reuses existing models
+    # (primary_model + reviewer_model + fallback_models, deduped), each role
+    # bound to a different model. The judge reuses reviewer_model.
+    debate_enabled: bool = False
+    debate_rounds: int = 1
+    # Best-of-N tournament selection. Opt-in; generate N diverse candidates
+    # (round-robin over the debate panel when available), then an independent
+    # judge (reviewer_model) scores/ranks and the single winner proceeds. Keeps
+    # the pipeline linear (one canonical artifact per stage).
+    # tournament_candidates < 2 disables the tournament.
+    tournament_enabled: bool = False
+    tournament_candidates: int = 3
     acp: AcpConfig = field(default_factory=AcpConfig)
+
+
+@dataclass(frozen=True)
+class LiteratureSearchConfig:
+    """Configuration for Stage 4 academic literature search backends."""
+
+    sources: tuple[str, ...] = ("openalex", "semantic_scholar", "arxiv")
+    max_results_per_query: int = 40
+    inter_query_delay_sec: float = 1.5
+    openalex_email: str = "researchclaw@users.noreply.github.com"
+    openalex_api_key: str = ""
+    openalex_api_key_env: str = "OPENALEX_API_KEY"
+    s2_api_key: str = ""
+    s2_api_key_env: str = "S2_API_KEY"
 
 
 @dataclass(frozen=True)
@@ -835,6 +874,9 @@ class RCConfig:
     knowledge_base: KnowledgeBaseConfig
     openclaw_bridge: OpenClawBridgeConfig
     llm: LlmConfig
+    literature_search: LiteratureSearchConfig = field(
+        default_factory=LiteratureSearchConfig
+    )
     security: SecurityConfig = field(default_factory=SecurityConfig)
     experiment: ExperimentConfig = field(default_factory=ExperimentConfig)
     export: ExportConfig = field(default_factory=ExportConfig)
@@ -887,6 +929,7 @@ class RCConfig:
         knowledge_base = data["knowledge_base"]
         bridge = data.get("openclaw_bridge") or {}
         llm = data["llm"]
+        literature_search = data.get("literature_search") or {}
         security = data.get("security") or {}
         experiment = data.get("experiment") or {}
         export = data.get("export") or {}
@@ -948,6 +991,7 @@ class RCConfig:
                 use_browser=bool(bridge.get("use_browser", False)),
             ),
             llm=_parse_llm_config(llm),
+            literature_search=_parse_literature_search_config(literature_search),
             security=SecurityConfig(
                 hitl_required_stages=tuple(
                     int(s) for s in security.get("hitl_required_stages", (5, 9, 20))
@@ -1147,12 +1191,71 @@ def _parse_llm_config(data: dict[str, Any]) -> LlmConfig:
         s2_api_key=data.get("s2_api_key", ""),
         notes=data.get("notes", ""),
         timeout_sec=_safe_int(data.get("timeout_sec"), 600),
+        reviewer_model=data.get("reviewer_model", ""),
+        reviewer_provider=data.get("reviewer_provider", ""),
+        reviewer_base_url=data.get("reviewer_base_url", ""),
+        reviewer_api_key=data.get("reviewer_api_key", ""),
+        reviewer_api_key_env=data.get("reviewer_api_key_env", ""),
+        debate_enabled=bool(data.get("debate_enabled", False)),
+        debate_rounds=_safe_int(data.get("debate_rounds"), 1),
+        tournament_enabled=bool(data.get("tournament_enabled", False)),
+        tournament_candidates=_safe_int(data.get("tournament_candidates"), 3),
         acp=AcpConfig(
             agent=acp_data.get("agent", "claude"),
             cwd=acp_data.get("cwd", "."),
             acpx_command=acp_data.get("acpx_command", ""),
             session_name=acp_data.get("session_name", "researchclaw"),
             timeout_sec=int(acp_data.get("timeout_sec", 1800)),
+            max_turns=_safe_int(acp_data.get("max_turns"), 1),
+        ),
+    )
+
+
+def _parse_literature_search_config(data: dict[str, Any]) -> LiteratureSearchConfig:
+    if not data:
+        return LiteratureSearchConfig()
+
+    sources_raw = data.get("sources", LiteratureSearchConfig.sources)
+    if isinstance(sources_raw, str):
+        sources = tuple(
+            source.strip()
+            for source in sources_raw.split(",")
+            if source.strip()
+        )
+    else:
+        sources = tuple(str(source) for source in (sources_raw or ()))
+    if not sources:
+        sources = LiteratureSearchConfig.sources
+
+    return LiteratureSearchConfig(
+        sources=sources,
+        max_results_per_query=max(
+            1,
+            _safe_int(
+                data.get("max_results_per_query"),
+                LiteratureSearchConfig.max_results_per_query,
+            ),
+        ),
+        inter_query_delay_sec=max(
+            0.0,
+            _safe_float(
+                data.get("inter_query_delay_sec"),
+                LiteratureSearchConfig.inter_query_delay_sec,
+            ),
+        ),
+        openalex_email=str(
+            data.get("openalex_email", LiteratureSearchConfig.openalex_email)
+        ),
+        openalex_api_key=str(data.get("openalex_api_key", "")),
+        openalex_api_key_env=str(
+            data.get(
+                "openalex_api_key_env",
+                LiteratureSearchConfig.openalex_api_key_env,
+            )
+        ),
+        s2_api_key=str(data.get("s2_api_key", "")),
+        s2_api_key_env=str(
+            data.get("s2_api_key_env", LiteratureSearchConfig.s2_api_key_env)
         ),
     )
 
@@ -1179,7 +1282,7 @@ def _parse_agentic_config(data: dict[str, Any]) -> AgenticConfig:
 def _parse_collider_agent_config(data: dict[str, Any]) -> ColliderAgentConfig:
     if not data:
         return ColliderAgentConfig()
-    extra_raw = data.get("extra_args", ("--dangerously-bypass-permissions",))
+    extra_raw = data.get("extra_args", ("--dangerously-skip-permissions",))
     if isinstance(extra_raw, str):
         extra_raw = [extra_raw]
     return ColliderAgentConfig(

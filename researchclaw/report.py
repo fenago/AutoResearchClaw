@@ -151,10 +151,22 @@ def _citation_section(run_dir: Path) -> str:
         try:
             loaded = json.loads(verify_path.read_text(encoding="utf-8"))
             vdata = loaded if isinstance(loaded, dict) else {}
-            total = int(vdata.get("total_references", 0))
-            verified = int(vdata.get("verified_count", 0))
-            suspicious = int(vdata.get("suspicious_count", 0))
-            hallucinated = int(vdata.get("hallucinated_count", 0))
+            # VerificationReport.to_dict() nests the counts under "summary"
+            # (keys: total/verified/suspicious/hallucinated). Fall back to the
+            # older flat keys for backward compatibility.
+            summary = vdata.get("summary")
+            if not isinstance(summary, dict):
+                summary = {}
+            total = int(summary.get("total", vdata.get("total_references", 0)))
+            verified = int(
+                summary.get("verified", vdata.get("verified_count", 0))
+            )
+            suspicious = int(
+                summary.get("suspicious", vdata.get("suspicious_count", 0))
+            )
+            hallucinated = int(
+                summary.get("hallucinated", vdata.get("hallucinated_count", 0))
+            )
             pct = f"{verified / total * 100:.1f}%" if total > 0 else "N/A"
             lines.append(f"- Verified: {verified}/{total} ({pct})")
             if suspicious:

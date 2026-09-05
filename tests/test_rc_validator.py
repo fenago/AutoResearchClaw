@@ -9,6 +9,7 @@ from researchclaw.experiment.validator import (
     DANGEROUS_CALLS,
     CodeValidation,
     ValidationIssue,
+    auto_fix_unbound_locals,
     check_filename_collisions,
     extract_imports,
     format_issues_for_llm,
@@ -393,3 +394,47 @@ def test_filename_collision_multiple_shadows():
     files = {"config.py": "", "logging.py": "", "main.py": ""}
     warnings = check_filename_collisions(files)
     assert len(warnings) == 2
+
+
+def test_auto_fix_does_not_clobber_loop_assigned_var():
+    """Regression: a variable assigned in a for-loop AND an if-branch must NOT
+    be pre-seeded with ``= None`` (that would clobber the loop's value)."""
+    code = (
+        "def compute(items, flag):\n"
+        "    for x in items:\n"
+        "        total = x * 2\n"
+        "    if flag:\n"
+        "        total = 0\n"
+        "    return total\n"
+    )
+    fixed, n = auto_fix_unbound_locals(code)
+    assert n == 0
+    assert "total = None" not in fixed
+
+
+def test_auto_fix_does_not_clobber_with_bound_var():
+    """A variable bound by a with-statement must not be pre-seeded either."""
+    code = (
+        "def g(flag, path):\n"
+        "    with open(path) as fh:\n"
+        "        data = fh.read()\n"
+        "    if flag:\n"
+        "        data = ''\n"
+        "    return data\n"
+    )
+    fixed, n = auto_fix_unbound_locals(code)
+    assert n == 0
+    assert "data = None" not in fixed
+
+
+def test_auto_fix_still_seeds_genuine_if_only_var():
+    """A variable assigned only inside an if-branch must still be fixed."""
+    code = (
+        "def f(flag):\n"
+        "    if flag:\n"
+        "        result = 1\n"
+        "    return result\n"
+    )
+    fixed, n = auto_fix_unbound_locals(code)
+    assert n >= 1
+    assert "result = None" in fixed

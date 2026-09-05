@@ -191,15 +191,29 @@ class HITLSession:
             if human_input is not None:
                 pass  # callback succeeded
             elif self.run_dir is not None:
-                # Callback failed — fall back to file polling
+                # Callback failed — fall back to file polling, honouring the
+                # user's configured timeout policy (do NOT silently
+                # auto-approve a gate the user asked to review).
                 from researchclaw.hitl.file_wait import poll_for_response
                 human_input = poll_for_response(
                     self.run_dir / "hitl",
-                    timeout_sec=60,
-                    auto_proceed_on_timeout=True,
+                    timeout_sec=self.config.timeouts.default_human_timeout_sec,
+                    auto_proceed_on_timeout=(
+                        self.config.timeouts.auto_proceed_on_timeout
+                    ),
                 )
             else:
-                human_input = HumanInput(action=HumanAction.APPROVE)
+                # No file channel to recover on — approve only if the user
+                # opted into auto-proceed; otherwise abort rather than fabricate
+                # an approval.
+                if self.config.timeouts.auto_proceed_on_timeout:
+                    human_input = HumanInput(action=HumanAction.APPROVE)
+                else:
+                    human_input = HumanInput(
+                        action=HumanAction.ABORT,
+                        message="HITL input callback failed and no run_dir "
+                        "to recover input from",
+                    )
         elif self.run_dir is not None:
             # No interactive callback — use file-based polling
             # External tools (attach, web, MCP) can write response.json

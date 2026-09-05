@@ -166,13 +166,73 @@ class LLMClient:
         )
         client = cls(config)
 
-        # Detect Anthropic or Kimi-Anthropic provider — use original URL/key (not the
-        # MetaClaw proxy URL which is OpenAI-compatible only).
-        if provider in ("anthropic", "kimi-anthropic"):
+        # Anthropic-compatible providers use the original URL/key, not the
+        # MetaClaw proxy URL, which is OpenAI-compatible only.
+        if preset.get("adapter") == "anthropic":
             from .anthropic_adapter import AnthropicAdapter
 
             client._anthropic = AnthropicAdapter(
                 original_base_url, original_api_key, config.timeout_sec
+            )
+        return client
+
+    @classmethod
+    def reviewer_from_rc_config(cls, rc_config: Any) -> "LLMClient | None":
+        """Build an INDEPENDENT reviewer/judge client.
+
+        Returns None when ``llm.reviewer_model`` is empty (callers then fall
+        back to the generator client, preserving legacy behaviour).
+
+        When only ``reviewer_model`` is set, the reviewer reuses the main
+        provider/base_url/api_key but talks to a different model. When
+        ``reviewer_provider``/``reviewer_base_url``/``reviewer_api_key(_env)``
+        are set, a fully independent provider is used. The reviewer never
+        falls back to the author model (empty ``fallback_models``) so its
+        judgement stays decoupled from the generator.
+        """
+        from researchclaw.llm import PROVIDER_PRESETS
+
+        llm = rc_config.llm
+        reviewer_model = str(getattr(llm, "reviewer_model", "") or "").strip()
+        if not reviewer_model:
+            return None
+
+        provider = (
+            str(getattr(llm, "reviewer_provider", "") or "").strip()
+            or getattr(llm, "provider", "openai")
+        )
+        preset = PROVIDER_PRESETS.get(provider, {})
+        preset_base_url = preset.get("base_url")
+
+        base_url = (
+            str(getattr(llm, "reviewer_base_url", "") or "").strip()
+            or llm.base_url
+            or preset_base_url
+            or ""
+        )
+
+        reviewer_key_env = str(getattr(llm, "reviewer_api_key_env", "") or "").strip()
+        api_key = (
+            str(getattr(llm, "reviewer_api_key", "") or "").strip()
+            or (os.environ.get(reviewer_key_env, "") if reviewer_key_env else "")
+            or str(llm.api_key or os.environ.get(llm.api_key_env, "") or "")
+        )
+
+        config = LLMConfig(
+            base_url=base_url,
+            api_key=api_key,
+            wire_api=getattr(llm, "wire_api", "chat_completions"),
+            primary_model=reviewer_model,
+            fallback_models=[],
+            timeout_sec=getattr(llm, "timeout_sec", 600),
+        )
+        client = cls(config)
+
+        if provider in ("anthropic", "kimi-anthropic"):
+            from .anthropic_adapter import AnthropicAdapter
+
+            client._anthropic = AnthropicAdapter(
+                base_url, api_key, config.timeout_sec
             )
         return client
 
@@ -185,7 +245,7 @@ class LLMClient:
         temperature: float | None = None,
         json_mode: bool = False,
         system: str | None = None,
-        strip_thinking: bool = False,
+        strip_thinking: bool = True,
     ) -> LLMResponse:
         """Send a chat completion request with retry and fallback.
 
@@ -196,11 +256,14 @@ class LLMClient:
             temperature: Override temperature.
             json_mode: Request JSON response format.
             system: Prepend a system message.
-            strip_thinking: If True, strip <think>…</think> reasoning
-                tags from the response content.  Use this when the
-                output will be written to paper/script artifacts but
-                NOT for general chat calls (to avoid corrupting
-                legitimate content).
+            strip_thinking: Strip <think>…</think> and other reasoning
+                artifacts from the response content. Defaults to True:
+                reasoning traces are never wanted in a paper draft, in
+                generated code, or in a JSON/YAML payload, and most call
+                sites write the response straight into an artifact.
+                ``strip_thinking_tags`` returns clean input unchanged, so
+                enabling this on a response with no reasoning markers is a
+                no-op. Pass False only to keep the trace deliberately.
 
         Returns:
             LLMResponse with content and metadata.
@@ -291,7 +354,9 @@ class LLMClient:
         json_mode: bool,
     ) -> LLMResponse:
         """Call with exponential backoff retry."""
+        last_exc: Exception | None = None
         for attempt in range(self.config.max_retries):
+            is_last_attempt = attempt >= self.config.max_retries - 1
             try:
                 return self._raw_call(
                     model, messages, max_tokens, temperature, json_mode
@@ -331,6 +396,9 @@ class LLMClient:
                 # Retryable: 429 (rate limit), transient 400, 500, 502, 503, 504,
                 # 529 (Anthropic overloaded)
                 if status in (400, 429, 500, 502, 503, 504, 529):
+                    last_exc = e
+                    if is_last_attempt:
+                        raise
                     delay = min(
                         self.config.retry_base_delay * (2**attempt),
                         _MAX_BACKOFF_SEC,
@@ -351,35 +419,41 @@ class LLMClient:
                     continue
 
                 raise  # Other HTTP errors
-            except urllib.error.URLError:
-                if attempt < self.config.max_retries - 1:
-                    delay = min(
-                        self.config.retry_base_delay * (2**attempt),
-                        _MAX_BACKOFF_SEC,
-                    )
-                    time.sleep(delay)
-                    continue
-                raise
+            except urllib.error.URLError as e:
+                last_exc = e
+                if is_last_attempt:
+                    raise
+                delay = min(
+                    self.config.retry_base_delay * (2**attempt),
+                    _MAX_BACKOFF_SEC,
+                )
+                time.sleep(delay)
+                continue
             except (TimeoutError, OSError) as exc:
                 # Covers TimeoutError, ConnectionResetError, IncompleteRead, etc.
-                if attempt < self.config.max_retries - 1:
-                    delay = self.config.retry_base_delay * (2**attempt)
-                    logger.info(
-                        "Retry %d/%d for %s (%s). Waiting %.1fs.",
-                        attempt + 1,
-                        self.config.max_retries,
-                        model,
-                        type(exc).__name__,
-                        delay,
-                    )
-                    time.sleep(delay)
-                    continue
-                raise
+                last_exc = exc
+                if is_last_attempt:
+                    raise
+                delay = min(
+                    self.config.retry_base_delay * (2**attempt),
+                    _MAX_BACKOFF_SEC,
+                )
+                logger.info(
+                    "Retry %d/%d for %s (%s). Waiting %.1fs.",
+                    attempt + 1,
+                    self.config.max_retries,
+                    model,
+                    type(exc).__name__,
+                    delay,
+                )
+                time.sleep(delay)
+                continue
 
-        # All retries exhausted
+        # Unreachable when max_retries >= 1: the final attempt either returns
+        # or re-raises. Guards against a non-positive max_retries config.
         raise RuntimeError(
             f"LLM call failed after {self.config.max_retries} retries for model {model}"
-        )
+        ) from last_exc
 
     def _raw_call(
         self,

@@ -580,7 +580,7 @@ class CodeAgent:
         """Extract Python code from LLM response for a single file."""
         # Try to extract from ```python``` block
         m = re.search(r"```python\s*\n(.*?)```", content, re.DOTALL)
-        if m:
+        if m and m.group(1).strip():
             return m.group(1).strip()
 
         # Try ```filename:xxx.py block
@@ -588,19 +588,25 @@ class CodeAgent:
             rf"```(?:filename:)?{re.escape(expected_name)}\s*\n(.*?)```",
             content, re.DOTALL,
         )
-        if m:
+        if m and m.group(1).strip():
             return m.group(1).strip()
 
-        # If content looks like raw Python (starts with import/from/# or def)
+        # Any other fenced block — e.g. a plain ``` with no language tag,
+        # which models commonly emit even when told to skip fences entirely.
+        m = re.search(r"```[^\n`]*\n(.*?)```", content, re.DOTALL)
+        if m and m.group(1).strip():
+            return m.group(1).strip()
+
+        # No fence found — only trust the raw response as code if it
+        # actually parses as valid Python. Without this check, a
+        # conversational reply (e.g. "Same, no change.") gets accepted
+        # verbatim and silently corrupts the file.
         stripped = content.strip()
-        if stripped and (
-            stripped.startswith("import ")
-            or stripped.startswith("from ")
-            or stripped.startswith("#")
-            or stripped.startswith("def ")
-            or stripped.startswith("class ")
-            or stripped.startswith('"""')
-        ):
+        if stripped:
+            try:
+                ast.parse(stripped)
+            except SyntaxError:
+                return ""
             return stripped
 
         return ""

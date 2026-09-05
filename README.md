@@ -601,7 +601,7 @@ runtime:
 
 # === LLM ===
 llm:
-  provider: "openai-compatible"    # openai | openrouter | deepseek | minimax | acp | openai-compatible
+  provider: "openai-compatible"    # See the provider presets below
   base_url: "https://..."          # API endpoint (required for openai-compatible)
   api_key_env: "OPENAI_API_KEY"    # Env var for API key (required for openai-compatible)
   api_key: ""                      # Or hardcode key here
@@ -611,6 +611,17 @@ llm:
   acp:                             # Only used when provider: "acp"
     agent: "claude"                # ACP agent CLI command (claude, codex, gemini, etc.)
     cwd: "."                       # Working directory for the agent
+
+# === Literature search ===
+literature_search:
+  sources: ["openalex", "semantic_scholar", "arxiv"]  # Stage 4 backend order
+  max_results_per_query: 40          # Results per query before deduplication
+  inter_query_delay_sec: 1.5         # Delay between expanded queries
+  openalex_email: "researchclaw@users.noreply.github.com"
+  openalex_api_key_env: "OPENALEX_API_KEY"
+  openalex_api_key: ""              # Optional; env var is preferred
+  s2_api_key_env: "S2_API_KEY"
+  s2_api_key: ""                    # Optional; falls back to llm.s2_api_key
 
 # === Experiment ===
 experiment:
@@ -748,6 +759,21 @@ openclaw_bridge:
   use_web_fetch: false             # Live web search
   use_browser: false               # Browser-based paper collection
 ```
+
+MiniMax presets use `MINIMAX_API_KEY`, `MiniMax-M3` as the primary model,
+and `MiniMax-M2.7` in the fallback chain.
+
+| Provider preset | Region | Protocol | Base URL |
+|---|---|---|---|
+| `minimax-global` | Global | OpenAI-compatible | `https://api.minimax.io/v1` |
+| `minimax` | China | OpenAI-compatible | `https://api.minimaxi.com/v1` |
+| `minimax-anthropic` | Global | Anthropic-compatible | `https://api.minimax.io/anthropic` |
+| `minimax-anthropic-cn` | China | Anthropic-compatible | `https://api.minimaxi.com/anthropic` |
+
+Anthropic-compatible presets require `pip install "researchclaw[anthropic]"`.
+The global and China API references are available from the
+[MiniMax platform](https://platform.minimax.io/docs) and
+[MiniMax China platform](https://platform.minimaxi.com/docs).
 
 </details>
 

@@ -42,6 +42,7 @@ class ACPConfig:
     acpx_command: str = ""  # auto-detect if empty
     session_name: str = "researchclaw"
     timeout_sec: int = 1800  # per-prompt timeout
+    max_turns: int = 1  # turns allowed per prompt before acpx aborts the call
 
 
 def _find_acpx() -> str | None:
@@ -91,6 +92,7 @@ class ACPClient:
             acpx_command=getattr(acp, "acpx_command", ""),
             session_name=getattr(acp, "session_name", "researchclaw"),
             timeout_sec=getattr(acp, "timeout_sec", 1800),
+            max_turns=getattr(acp, "max_turns", 1),
         ))
 
     # ------------------------------------------------------------------
@@ -106,7 +108,7 @@ class ACPClient:
         temperature: float | None = None,
         json_mode: bool = False,
         system: str | None = None,
-        strip_thinking: bool = False,
+        strip_thinking: bool = True,
     ) -> LLMResponse:
         """Send a prompt and return the agent's response.
 
@@ -114,6 +116,12 @@ class ACPClient:
         ``model``, ``max_tokens``, ``temperature``, and ``json_mode`` are
         accepted but not forwarded — the agent manages its own model and
         parameters.
+
+        ``strip_thinking`` defaults to True: ACP agents (opencode, Claude
+        Code) interleave ``[thinking]`` blocks and acpx metadata with the
+        answer, and callers that use the response as paper text or code must
+        not have to remember to ask for that to be removed. Pass False only
+        when the reasoning trace itself is what you want.
         """
         prompt_text = self._messages_to_prompt(messages, system=system)
         content = self._send_prompt(prompt_text)
@@ -245,7 +253,7 @@ class ACPClient:
         )
         try:
             subprocess.run(
-                [acpx, "--approve-all", "--max-turns", "1",
+                [acpx, "--approve-all", "--max-turns", str(self.config.max_turns),
                  "--ttl", "0", "--cwd", self._abs_cwd(),
                  self.config.agent, "-s", self.config.session_name,
                  _warmup],
@@ -466,7 +474,7 @@ class ACPClient:
     def _send_prompt_cli(self, acpx: str, prompt: str) -> str:
         """Send prompt as a CLI argument (original path)."""
         cmd = [
-            acpx, "--approve-all", "--max-turns", "1",
+            acpx, "--approve-all", "--max-turns", str(self.config.max_turns),
             "--ttl", "0", "--cwd", self._abs_cwd(),
             self.config.agent, "-s", self.config.session_name, prompt,
         ]
@@ -486,7 +494,7 @@ class ACPClient:
     def _send_prompt_via_file(self, acpx: str, prompt: str) -> str:
         """Send prompt via stdin pipe (``-f -``) to avoid CLI arg limits."""
         cmd = [
-            acpx, "--approve-all", "--max-turns", "1",
+            acpx, "--approve-all", "--max-turns", str(self.config.max_turns),
             "--ttl", "0", "--cwd", self._abs_cwd(),
             self.config.agent, "-s", self.config.session_name,
             "-f", "-",

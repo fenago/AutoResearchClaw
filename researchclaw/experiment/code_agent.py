@@ -431,23 +431,25 @@ class _CliAgentBase:
             stdout_bytes, stderr_bytes = proc.communicate(timeout=timeout_sec)
         except subprocess.TimeoutExpired:
             timed_out = True
-            # Kill entire process group
+            # Kill entire process group. os.killpg/os.getpgid do not exist on
+            # Windows (AttributeError, not OSError), so fall back to killing the
+            # process directly there instead of crashing the cleanup path.
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            except OSError:
-                pass
+            except (OSError, AttributeError):
+                proc.terminate()
             try:
                 stdout_bytes, stderr_bytes = proc.communicate(timeout=5)
             except subprocess.TimeoutExpired:
                 try:
                     os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                except OSError:
-                    pass
+                except (OSError, AttributeError):
+                    proc.kill()
                 stdout_bytes, stderr_bytes = proc.communicate(timeout=5)
 
         elapsed = time.monotonic() - start
         return (
-            proc.returncode or -1,
+            proc.returncode if proc.returncode is not None else -1,
             _to_text(stdout_bytes),
             _to_text(stderr_bytes),
             elapsed,

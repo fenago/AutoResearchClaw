@@ -121,7 +121,17 @@ def strip_thinking_tags(text: str) -> str:
     # Phase 5: acpx metadata lines
     result = _ACPX_LINE_RE.sub("", result)
 
-    # Phase 6: Clean up artifacts
+    # Phase 6: Clean up artifacts.
+    #
+    # Only run when something was actually removed. Collapsing blank lines is
+    # there to close the gaps stripping leaves behind — applied to text that
+    # had no reasoning artifacts in the first place it is pure damage, e.g. it
+    # rewrites the PEP 8 two-blank-line separator in generated Python to one.
+    # Leaving clean input byte-for-byte untouched keeps this safe to call on
+    # every response by default.
+    if result == text:
+        return result
+
     result = re.sub(r"^`[\u2500-]+`\s*$", "", result, flags=re.MULTILINE)
     result = re.sub(r"^`[-]{20,}`\s*$", "", result, flags=re.MULTILINE)
 

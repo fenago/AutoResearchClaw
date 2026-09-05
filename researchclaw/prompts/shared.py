@@ -790,6 +790,36 @@ _DEFAULT_SUB_PROMPTS: dict[str, dict[str, Any]] = {
         ),
         "max_tokens": 8192,
     },
+    "tournament_rank": {
+        "system": (
+            "You score and rank competing research artifacts, distinct from the "
+            "authors. Score each candidate 1-10 on novelty, feasibility, and "
+            "rigor, then pick the SINGLE best. Be decisive and critical — do not "
+            "average or hedge."
+        ),
+        "user": (
+            "Below are {n} candidate research artifacts. Score and rank them, "
+            "then choose the best.\n"
+            "Return ONLY JSON (no prose, no markdown fences):\n"
+            '{"rankings": [{"id": <int>, "score": <1-10>, "reason": <str>}], '
+            '"winner": <int>}\n\n'
+            "{candidates}"
+        ),
+    },
+    "debate_rebuttal": {
+        "system": (
+            "You are participating in a structured research debate as the "
+            "{role} perspective. You have seen the other perspectives. Push back "
+            "on their weak points, defend or REVISE your own position with "
+            "evidence, and concede where they are right. Be rigorous, not "
+            "stubborn."
+        ),
+        "user": (
+            "Your previous position ({role}):\n{own_position}\n\n"
+            "Other perspectives this round:\n{others}\n\n"
+            "Write your rebuttal and updated position."
+        ),
+    },
     "code_repair": {
         "system": "You fix Python code validation errors while preserving functionality.",
         "user": (
